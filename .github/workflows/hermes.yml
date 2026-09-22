@@ -3,6 +3,10 @@ name: Hermes Agent
 on:
   workflow_dispatch:
 
+permissions:
+  actions: read
+  contents: read
+
 jobs:
   hermes:
     runs-on: ubuntu-latest
@@ -23,6 +27,42 @@ jobs:
           cd /tmp/hermes
           pip install -e .
 
+      - name: Restore Hermes state
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p "$HOME/.hermes"
+
+          RUN_ID=$(gh run list \
+            --workflow hermes.yml \
+            --status success \
+            --limit 10 \
+            --json databaseId \
+            --jq '.[0].databaseId' || true)
+
+          if [ -n "$RUN_ID" ]; then
+            echo "Restoring Hermes state from run $RUN_ID..."
+
+            mkdir -p /tmp/hermes-restore
+
+            if gh run download "$RUN_ID" \
+              --name hermes-state \
+              --dir /tmp/hermes-restore; then
+
+              if [ -f /tmp/hermes-restore/hermes-state.tar.gz ]; then
+                tar -xzf /tmp/hermes-restore/hermes-state.tar.gz \
+                  -C "$HOME/.hermes"
+                echo "Hermes state restored successfully."
+              else
+                echo "No Hermes state archive found."
+              fi
+            else
+              echo "No previous Hermes state artifact available."
+            fi
+          else
+            echo "No previous successful Hermes run found. Starting fresh."
+          fi
+
       - name: Run Hermes Gateway
         env:
           NVIDIA_API_KEY: ${{ secrets.NVIDIA_API_KEY }}
@@ -30,4 +70,39 @@ jobs:
           TELEGRAM_ALLOWED_USERS: ${{ secrets.TELEGRAM_ALLOWED_USER_ID }}
         run: |
           cd /tmp/hermes
-          hermes gateway run
+
+          echo "Starting Hermes Gateway..."
+
+          timeout --signal=TERM --kill-after=30s 330m \
+            hermes gateway run
+
+      - name: Save Hermes state
+        if: always()
+        run: |
+          echo "Saving Hermes state..."
+
+          mkdir -p /tmp/hermes-backup
+
+          if [ -d "$HOME/.hermes" ]; then
+            tar \
+              --exclude='auth' \
+              --exclude='.env' \
+              --exclude='logs' \
+              --exclude='checkpoints' \
+              -czf /tmp/hermes-backup/hermes-state.tar.gz \
+              -C "$HOME/.hermes" .
+
+            echo "Hermes state archive created."
+          else
+            echo "Hermes directory not found."
+            exit 0
+          fi
+
+      - name: Upload Hermes state
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: hermes-state
+          path: /tmp/hermes-backup/hermes-state.tar.gz
+          retention-days: 90
+          if-no-files-found: warn
