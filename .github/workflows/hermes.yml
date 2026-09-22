@@ -1,1 +1,31 @@
+name: Hermes Agent
 
+on:
+  workflow_dispatch:
+
+jobs:
+  hermes:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Hermes
+        run: |
+          git clone https://github.com/NousResearch/hermes-agent.git /tmp/hermes
+          cd /tmp/hermes
+          pip install -e .
+
+      - name: Run Hermes
+        env:
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+        run: |
+          cd /tmp/hermes
+          hermes
