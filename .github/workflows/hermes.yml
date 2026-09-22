@@ -23,9 +23,11 @@ jobs:
           cd /tmp/hermes
           pip install -e .
 
-      - name: Run Hermes
+      - name: Run Hermes Gateway
         env:
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_ALLOWED_USERS: ${{ secrets.TELEGRAM_ALLOWED_USER_ID }}
         run: |
           cd /tmp/hermes
-          hermes
+          hermes gateway run
