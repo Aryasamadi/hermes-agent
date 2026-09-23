@@ -1,0 +1,42 @@
+name: NVIDIA NIM Test
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test-nvidia:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Test NVIDIA NIM
+        env:
+          NVIDIA_API_KEY: ${{ secrets.NVIDIA_API_KEY }}
+        run: |
+          set -euo pipefail
+
+          echo "Testing NVIDIA NIM..."
+
+          RESPONSE=$(curl -sS --fail-with-body \
+            --max-time 60 \
+            -X POST \
+            "https://integrate.api.nvidia.com/v1/chat/completions" \
+            -H "Authorization: Bearer ${NVIDIA_API_KEY}" \
+            -H "Content-Type: application/json" \
+            -d '{
+              "model": "openai/gpt-oss-20b",
+              "messages": [
+                {
+                  "role": "user",
+                  "content": "Reply with exactly: OK"
+                }
+              ],
+              "max_tokens": 5,
+              "stream": false
+            }')
+
+          echo "NVIDIA response:"
+          echo "$RESPONSE"
