@@ -1,0 +1,59 @@
+name: Hermes Relay
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: hermes-relay
+  cancel-in-progress: false
+
+jobs:
+  relay:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+
+    steps:
+      - name: Initialize
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo "======================================"
+          echo " Hermes Relay"
+          echo "======================================"
+          echo "Runner : ${RUNNER_NAME}"
+          echo "OS     : ${RUNNER_OS}"
+          echo "Arch   : ${RUNNER_ARCH}"
+          echo "Started: $(date -u '+%Y-%m-%d %H:%M:%S UTC')"
+          echo "======================================"
+
+      - name: Keep runner alive
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo "Relay runner is online."
+          echo "No Hermes state is stored on GitHub."
+          echo "No Hermes files are uploaded."
+          echo "No proxy or VPN is used."
+
+          # Keep the GitHub runner alive.
+          # This is intentionally only the relay host;
+          # Hermes state remains on the Android device.
+          timeout --signal=TERM --kill-after=10s 340m bash -c '
+            while true; do
+              echo "[relay] alive $(date -u "+%Y-%m-%d %H:%M:%S UTC")"
+              sleep 300
+            done
+          '
+
+      - name: Finished
+        if: always()
+        shell: bash
+        run: |
+          echo "Hermes Relay runner stopped."
+          echo "No Hermes state was deleted from the Android device."
