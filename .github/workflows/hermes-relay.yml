@@ -1,59 +1,109 @@
-name: Hermes Relay
+name: Hermes AI Relay
 
 on:
   workflow_dispatch:
+    inputs:
+      request_id:
+        description: "Request ID"
+        required: true
+        type: string
+      prompt:
+        description: "AI prompt"
+        required: true
+        type: string
 
 permissions:
   contents: read
-  actions: read
-
-concurrency:
-  group: hermes-relay
-  cancel-in-progress: false
+  issues: write
 
 jobs:
   relay:
     runs-on: ubuntu-latest
-    timeout-minutes: 350
+    timeout-minutes: 10
 
     steps:
-      - name: Initialize
-        shell: bash
+      - name: Validate request
+        env:
+          REQUEST_ID: ${{ inputs.request_id }}
+          PROMPT: ${{ inputs.prompt }}
         run: |
           set -euo pipefail
 
-          echo "======================================"
-          echo " Hermes Relay"
-          echo "======================================"
-          echo "Runner : ${RUNNER_NAME}"
-          echo "OS     : ${RUNNER_OS}"
-          echo "Arch   : ${RUNNER_ARCH}"
-          echo "Started: $(date -u '+%Y-%m-%d %H:%M:%S UTC')"
-          echo "======================================"
+          test -n "$REQUEST_ID"
+          test -n "$PROMPT"
 
-      - name: Keep runner alive
-        shell: bash
+          echo "Relay request accepted."
+          echo "Request ID: $REQUEST_ID"
+          echo "Prompt received."
+
+      - name: Call NVIDIA
+        id: nvidia
+        env:
+          NVIDIA_API_KEY: ${{ secrets.NVIDIA_API_KEY }}
+          PROMPT: ${{ inputs.prompt }}
         run: |
           set -euo pipefail
 
-          echo "Relay runner is online."
-          echo "No Hermes state is stored on GitHub."
-          echo "No Hermes files are uploaded."
-          echo "No proxy or VPN is used."
+          RESPONSE_FILE="$RUNNER_TEMP/nvidia-response.json"
 
-          # Keep the GitHub runner alive.
-          # This is intentionally only the relay host;
-          # Hermes state remains on the Android device.
-          timeout --signal=TERM --kill-after=10s 340m bash -c '
-            while true; do
-              echo "[relay] alive $(date -u "+%Y-%m-%d %H:%M:%S UTC")"
-              sleep 300
-            done
-          '
+          HTTP_CODE=$(curl \
+            --silent \
+            --show-error \
+            --output "$RESPONSE_FILE" \
+            --write-out "%{http_code}" \
+            --max-time 60 \
+            --request POST \
+            "https://integrate.api.nvidia.com/v1/chat/completions" \
+            --header "Authorization: Bearer ${NVIDIA_API_KEY}" \
+            --header "Content-Type: application/json" \
+            --data "$(python3 -c 'import json,os; print(json.dumps({
+              "model":"openai/gpt-oss-20b",
+              "messages":[{"role":"user","content":os.environ["PROMPT"]}],
+              "max_tokens":1024,
+              "stream":False
+            }))')")
 
-      - name: Finished
+          echo "HTTP status: $HTTP_CODE"
+
+          if [ "$HTTP_CODE" -lt 200 ] || [ "$HTTP_CODE" -ge 300 ]; then
+            echo "NVIDIA request failed."
+            cat "$RESPONSE_FILE"
+            exit 1
+          fi
+
+          python3 - "$RESPONSE_FILE" <<'PY'
+          import json
+          import sys
+
+          with open(sys.argv[1], encoding="utf-8") as f:
+              data = json.load(f)
+
+          choices = data.get("choices") or []
+          if not choices:
+              raise SystemExit("NVIDIA returned no choices.")
+
+          message = choices[0].get("message") or {}
+          content = message.get("content")
+
+          if not content:
+              raise SystemExit("NVIDIA returned empty content.")
+
+          print(content)
+          PY
+
+      - name: Publish relay result
         if: always()
-        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REQUEST_ID: ${{ inputs.request_id }}
+          RESULT: ${{ steps.nvidia.outcome }}
         run: |
-          echo "Hermes Relay runner stopped."
-          echo "No Hermes state was deleted from the Android device."
+          set -euo pipefail
+
+          echo "Relay request ${REQUEST_ID}: ${RESULT}"
+
+          if [ "${RESULT}" = "success" ]; then
+            echo "AI request completed successfully."
+          else
+            echo "AI request failed."
+          fi
