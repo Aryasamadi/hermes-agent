@@ -30,7 +30,8 @@ jobs:
       - name: Install Hermes
         shell: bash
         run: |
-          set -e
+          set -euo pipefail
+
           git clone https://github.com/NousResearch/hermes-agent.git /tmp/hermes
           cd /tmp/hermes
           pip install -e .
@@ -51,7 +52,6 @@ jobs:
           fi
 
           if gh release view hermes-state --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-
             ASSET="$(
               gh release view hermes-state \
                 --repo "$GITHUB_REPOSITORY" \
@@ -67,6 +67,9 @@ jobs:
                 --pattern "$ASSET" \
                 --dir /tmp/hermes-restore
 
+              rm -rf /tmp/hermes-extract
+              mkdir -p /tmp/hermes-extract
+
               openssl enc -d \
                 -aes-256-cbc \
                 -pbkdf2 \
@@ -74,19 +77,23 @@ jobs:
                 -out /tmp/hermes-state.tar.gz \
                 -pass env:HERMES_BACKUP_KEY
 
-              mkdir -p /tmp/hermes-extract
-
               tar -xzf /tmp/hermes-state.tar.gz \
                 -C /tmp/hermes-extract
 
-              if [ ! -d /tmp/hermes-extract/hermes ]; then
+              ROOT="/tmp/hermes-extract/hermes"
+
+              # Compatibility with older backups that used data/ as root.
+              if [ ! -d "$ROOT" ]; then
+                ROOT="/tmp/hermes-extract/data"
+              fi
+
+              if [ ! -d "$ROOT" ]; then
                 echo "ERROR: Invalid Hermes backup."
                 exit 1
               fi
 
-              cp -a /tmp/hermes-extract/hermes/. "$HERMES_HOME/"
-
-              echo "Hermes state restored."
+              cp -a "$ROOT/." "$HERMES_HOME/"
+              echo "Hermes state restored from: $ROOT"
             else
               echo "No Hermes backup asset found."
             fi
@@ -102,10 +109,12 @@ jobs:
           mkdir -p "$HERMES_HOME"
 
           python - <<'PY'
+          import os
           from pathlib import Path
           import yaml
 
-          path = Path("/home/runner/.hermes/config.yaml")
+          home = Path(os.environ["HERMES_HOME"])
+          path = home / "config.yaml"
 
           if path.exists():
               try:
@@ -119,6 +128,10 @@ jobs:
               data = {}
 
           sessions = data.setdefault("sessions", {})
+          if not isinstance(sessions, dict):
+              sessions = {}
+              data["sessions"] = sessions
+
           sessions["auto_prune"] = False
 
           path.write_text(
@@ -138,7 +151,6 @@ jobs:
           set -euo pipefail
 
           PLUGIN_DIR="$HERMES_HOME/plugins/custom-model-manager"
-
           mkdir -p "$PLUGIN_DIR"
 
           cat > "$PLUGIN_DIR/plugin.yaml" <<'PLUGIN'
@@ -150,14 +162,12 @@ jobs:
           cat > "$PLUGIN_DIR/__init__.py" <<'PY'
           from __future__ import annotations
 
-          import asyncio
           import json
           import os
           import shlex
           from pathlib import Path
 
           import httpx
-
 
           HOME = Path(
               os.environ.get(
@@ -171,7 +181,6 @@ jobs:
           CONFIG_FILE = HOME / "config.yaml"
           ENV_FILE = HOME / ".env"
 
-
           def _ensure():
               DATA_DIR.mkdir(
                   parents=True,
@@ -181,47 +190,30 @@ jobs:
               if not DATA_FILE.exists():
                   DATA_FILE.write_text(
                       json.dumps(
-                          {
-                              "models": {}
-                          },
+                          {"models": {}},
                           indent=2,
                           ensure_ascii=False,
                       )
                   )
 
-
           def _load():
               _ensure()
 
               try:
-                  data = json.loads(
-                      DATA_FILE.read_text()
-                  )
+                  data = json.loads(DATA_FILE.read_text())
               except Exception:
-                  data = {
-                      "models": {}
-                  }
+                  data = {"models": {}}
 
               if not isinstance(data, dict):
-                  data = {
-                      "models": {}
-                  }
+                  data = {"models": {}}
 
-              data.setdefault(
-                  "models",
-                  {}
-              )
-
+              data.setdefault("models", {})
               return data
-
 
           def _save(data):
               _ensure()
 
-              tmp = DATA_FILE.with_suffix(
-                  ".tmp"
-              )
-
+              tmp = DATA_FILE.with_suffix(".tmp")
               tmp.write_text(
                   json.dumps(
                       data,
@@ -229,9 +221,7 @@ jobs:
                       ensure_ascii=False,
                   )
               )
-
               tmp.replace(DATA_FILE)
-
 
           def _load_config():
               import yaml
@@ -240,27 +230,15 @@ jobs:
                   return {}
 
               try:
-                  value = yaml.safe_load(
-                      CONFIG_FILE.read_text()
-                  )
-
-                  return (
-                      value
-                      if isinstance(value, dict)
-                      else {}
-                  )
-
+                  value = yaml.safe_load(CONFIG_FILE.read_text())
+                  return value if isinstance(value, dict) else {}
               except Exception:
                   return {}
-
 
           def _save_config(data):
               import yaml
 
-              tmp = CONFIG_FILE.with_suffix(
-                  ".tmp"
-              )
-
+              tmp = CONFIG_FILE.with_suffix(".tmp")
               tmp.write_text(
                   yaml.safe_dump(
                       data,
@@ -268,9 +246,7 @@ jobs:
                       allow_unicode=True,
                   )
               )
-
               tmp.replace(CONFIG_FILE)
-
 
           def _slug(value):
               value = (
@@ -283,19 +259,13 @@ jobs:
               result = ""
 
               for char in value:
-                  if (
-                      char.isalnum()
-                      or char in "-_"
-                  ):
+                  if char.isalnum() or char in "-_":
                       result += char
 
               if not result:
-                  raise ValueError(
-                      "Invalid provider name."
-                  )
+                  raise ValueError("Invalid provider name.")
 
               return result[:48]
-
 
           def _write_env(name, value):
               lines = []
@@ -311,16 +281,13 @@ jobs:
                   if not line.startswith(prefix)
               ]
 
-              lines.append(
-                  f"{name}={value}"
-              )
+              lines.append(f"{name}={value}")
 
               ENV_FILE.write_text(
                   "\n".join(lines) + "\n"
               )
 
               os.environ[name] = value
-
 
           def _add_provider(
               name,
@@ -332,19 +299,13 @@ jobs:
 
               env_name = (
                   "HERMES_CUSTOM_"
-                  + slug.upper().replace(
-                      "-",
-                      "_",
-                  )
+                  + slug.upper().replace("-", "_")
                   + "_API_KEY"
               )
 
               config = _load_config()
 
-              providers = config.setdefault(
-                  "providers",
-                  {},
-              )
+              providers = config.setdefault("providers", {})
 
               providers[slug] = {
                   "name": name,
@@ -353,16 +314,12 @@ jobs:
                   "transport": "chat_completions",
                   "default_model": model,
                   "models": {
-                      model: {}
+                      model: {},
                   },
               }
 
               _save_config(config)
-
-              _write_env(
-                  env_name,
-                  api_key,
-              )
+              _write_env(env_name, api_key)
 
               data = _load()
 
@@ -375,42 +332,27 @@ jobs:
               }
 
               _save(data)
-
               return slug
-
 
           def _handle_add(raw_args):
               try:
-                  args = shlex.split(
-                      raw_args
-                  )
+                  args = shlex.split(raw_args)
 
                   if len(args) != 4:
                       return (
                           "Usage:\n"
-                          "/addmodel "
-                          '"Provider Name" '
+                          '/addmodel "Provider Name" '
                           '"https://example.com/v1" '
-                          '"model-name" '
-                          '"API_KEY"'
+                          '"model-name" "API_KEY"'
                       )
 
-                  name = args[0]
-                  base_url = args[1]
-                  model = args[2]
-                  api_key = args[3]
+                  name, base_url, model, api_key = args
 
                   if not (
-                      base_url.startswith(
-                          "http://"
-                      )
-                      or base_url.startswith(
-                          "https://"
-                      )
+                      base_url.startswith("http://")
+                      or base_url.startswith("https://")
                   ):
-                      return (
-                          "❌ Invalid API URL."
-                      )
+                      return "❌ Invalid API URL."
 
                   slug = _add_provider(
                       name,
@@ -436,14 +378,9 @@ jobs:
                       f"{exc}"
                   )
 
-
           def _handle_list(raw_args):
               data = _load()
-
-              models = data.get(
-                  "models",
-                  {},
-              )
+              models = data.get("models", {})
 
               if not models:
                   return (
@@ -452,55 +389,32 @@ jobs:
                   )
 
               config = _load_config()
+              current = config.get("model", {})
 
-              current = config.get(
-                  "model",
-                  {},
-              )
+              if not isinstance(current, dict):
+                  current = {}
 
-              current_provider = (
-                  current.get("provider")
-                  if isinstance(
-                      current,
-                      dict,
-                  )
-                  else None
-              )
+              current_provider = current.get("provider")
+              current_model = current.get("default")
 
-              current_model = (
-                  current.get("default")
-                  if isinstance(
-                      current,
-                      dict,
-                  )
-                  else None
-              )
-
-              lines = [
-                  "مدل‌های شخصی:\n"
-              ]
+              lines = ["مدل‌های شخصی:\n"]
 
               for item in models.values():
                   active = ""
 
                   if (
-                      current_provider
-                      == item["provider"]
-                      and current_model
-                      == item["model"]
+                      current_provider == item["provider"]
+                      and current_model == item["model"]
                   ):
                       active = " ⭐ فعال"
 
                   lines.append(
                       f"• {item['name']}{active}\n"
-                      f"  Provider: {item['provider']}\n"
-                      f"  Model: {item['model']}"
+                      f" Provider: {item['provider']}\n"
+                      f" Model: {item['model']}"
                   )
 
-              return "\n".join(
-                  lines
-              )
-
+              return "\n".join(lines)
 
           async def _test_model(item):
               api = item["base_url"].rstrip("/")
@@ -508,10 +422,7 @@ jobs:
               if not api.endswith("/v1"):
                   api += "/v1"
 
-              endpoint = (
-                  api
-                  + "/chat/completions"
-              )
+              endpoint = api + "/chat/completions"
 
               key = os.environ.get(
                   item["key_env"],
@@ -519,15 +430,11 @@ jobs:
               )
 
               if not key:
-                  return (
-                      "❌ API key is unavailable."
-                  )
+                  return "❌ API key is unavailable."
 
               headers = {
-                  "Authorization":
-                      f"Bearer {key}",
-                  "Content-Type":
-                      "application/json",
+                  "Authorization": f"Bearer {key}",
+                  "Content-Type": "application/json",
               }
 
               payload = {
@@ -545,7 +452,6 @@ jobs:
                   async with httpx.AsyncClient(
                       timeout=30
                   ) as client:
-
                       response = await client.post(
                           endpoint,
                           headers=headers,
@@ -572,7 +478,6 @@ jobs:
                       f"{exc}"
                   )
 
-
           async def _handle_test(raw_args):
               name = raw_args.strip()
 
@@ -584,19 +489,14 @@ jobs:
 
               data = _load()
 
-              item = data["models"].get(
-                  _slug(name)
-              )
+              item = data["models"].get(_slug(name))
 
               if item is None:
                   return (
                       f"❌ Provider '{name}' not found."
                   )
 
-              return await _test_model(
-                  item
-              )
-
+              return await _test_model(item)
 
           def register(ctx):
               ctx.register_command(
@@ -628,7 +528,6 @@ jobs:
           set -euo pipefail
 
           cd /tmp/hermes
-
           hermes plugins enable custom-model-manager || true
 
       - name: Validate Hermes
@@ -641,22 +540,31 @@ jobs:
 
           if [ -f "$HERMES_HOME/state.db" ]; then
             python - <<'PY'
+          import os
           import sqlite3
 
-          path = "/home/runner/.hermes/state.db"
+          path = os.path.join(
+              os.environ["HERMES_HOME"],
+              "state.db",
+          )
 
           db = sqlite3.connect(
               f"file:{path}?mode=ro",
               uri=True,
           )
 
-          db.execute(
+          result = db.execute(
               "PRAGMA integrity_check"
-          ).fetchone()
+          ).fetchone()[0]
 
           db.close()
 
-          print("Existing state.db passed SQLite open check.")
+          if result != "ok":
+              raise SystemExit(
+                  "Existing state.db integrity check failed."
+              )
+
+          print("Existing state.db integrity check: OK.")
           PY
           fi
 
@@ -673,11 +581,9 @@ jobs:
             WORK="/tmp/hermes-backup"
 
             rm -rf "$WORK"
+            mkdir -p "$WORK/hermes"
 
-            mkdir -p \
-              "$WORK/data" \
-              "$WORK/db"
-
+            # Copy regular Hermes state while excluding live SQLite files.
             rsync -a \
               --exclude='*.db' \
               --exclude='*.db-wal' \
@@ -685,27 +591,23 @@ jobs:
               --exclude='logs/' \
               --exclude='cache/' \
               "$HERMES_HOME/" \
-              "$WORK/data/"
+              "$WORK/hermes/"
 
+            # Snapshot every existing SQLite database consistently.
             python - <<'PY'
+          import os
           import sqlite3
           from pathlib import Path
 
-          home = Path(
-              "/home/runner/.hermes"
-          )
+          home = Path(os.environ["HERMES_HOME"])
+          out = Path("/tmp/hermes-backup/hermes")
 
-          out = Path(
-              "/tmp/hermes-backup/db"
-          )
+          found = False
 
-          for source in home.rglob(
-              "*.db"
-          ):
-              relative = source.relative_to(
-                  home
-              )
+          for source in home.rglob("*.db"):
+              found = True
 
+              relative = source.relative_to(home)
               target = out / relative
 
               target.parent.mkdir(
@@ -713,62 +615,64 @@ jobs:
                   exist_ok=True,
               )
 
-              src = sqlite3.connect(
-                  f"file:{source}?mode=ro",
-                  uri=True,
-                  timeout=30,
-              )
+              try:
+                  src = sqlite3.connect(
+                      f"file:{source}?mode=ro",
+                      uri=True,
+                      timeout=30,
+                  )
 
-              dst = sqlite3.connect(
-                  target
-              )
+                  dst = sqlite3.connect(
+                      target,
+                      timeout=30,
+                  )
 
-              with dst:
-                  src.backup(dst)
+                  try:
+                      with dst:
+                          src.backup(dst)
+                  finally:
+                      dst.close()
+                      src.close()
 
-              dst.close()
-              src.close()
+                  print(f"Snapshot: {relative}")
 
-              print(
-                  f"Snapshot: {relative}"
-              )
+              except sqlite3.Error as exc:
+                  print(
+                      f"WARNING: Could not snapshot "
+                      f"{relative}: {exc}"
+                  )
+
+          if not found:
+              print("No SQLite databases exist yet.")
           PY
 
-            rsync -a \
-              "$WORK/db/" \
-              "$WORK/data/"
-
-            if [ ! -f "$WORK/data/state.db" ]; then
-              echo "ERROR: state.db was not found."
-              exit 1
-            fi
-
-            python - <<'PY'
+            # state.db is optional during the first backup.
+            if [ -f "$WORK/hermes/state.db" ]; then
+              python - <<'PY'
           import sqlite3
 
-          path = "/tmp/hermes-backup/data/state.db"
+          path = "/tmp/hermes-backup/hermes/state.db"
 
-          db = sqlite3.connect(path)
-
-          result = db.execute(
-              "PRAGMA integrity_check"
-          ).fetchone()[0]
-
-          db.close()
+          with sqlite3.connect(path) as db:
+              result = db.execute(
+                  "PRAGMA integrity_check"
+              ).fetchone()[0]
 
           if result != "ok":
               raise SystemExit(
                   "state.db integrity check failed"
               )
 
-          print(
-              "state.db integrity check: OK"
-          )
+          print("state.db integrity check: OK")
           PY
+            else
+              echo "No state.db exists yet; continuing with a non-database backup."
+            fi
 
             tar -czf \
               "$WORK/hermes-state.tar.gz" \
-              -C "$WORK" data
+              -C "$WORK" \
+              hermes
 
             openssl enc \
               -aes-256-cbc \
@@ -810,8 +714,10 @@ jobs:
             exit 1
           fi
 
+          # The first backup may not contain state.db yet.
           backup
 
+          # Keep a fresh encrypted snapshot every 10 minutes.
           (
             while true; do
               sleep 600
@@ -828,5 +734,4 @@ jobs:
           trap cleanup EXIT
 
           cd /tmp/hermes
-
           hermes gateway run
