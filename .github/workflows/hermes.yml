@@ -1,15 +1,23 @@
+
 name: Hermes Agent
 
 on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   hermes:
     runs-on: ubuntu-latest
     timeout-minutes: 350
+
+    env:
+      HERMES_HOME: /home/runner/.hermes
+      NVIDIA_API_KEY: ${{ secrets.NVIDIA_API_KEY }}
+      TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+      TELEGRAM_ALLOWED_USERS: ${{ secrets.TELEGRAM_ALLOWED_USER_ID }}
+      HERMES_BACKUP_KEY: ${{ secrets.HERMES_BACKUP_KEY }}
 
     steps:
       - name: Checkout
@@ -25,12 +33,761 @@ jobs:
           git clone https://github.com/NousResearch/hermes-agent.git /tmp/hermes
           cd /tmp/hermes
           pip install -e .
+          pip install cryptography httpx pyyaml
 
-      - name: Run Hermes Gateway
-        env:
-          NVIDIA_API_KEY: ${{ secrets.NVIDIA_API_KEY }}
-          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TELEGRAM_ALLOWED_USERS: ${{ secrets.TELEGRAM_ALLOWED_USER_ID }}
+      # ------------------------------------------------------------
+      # RESTORE PREVIOUS HERMES STATE
+      # ------------------------------------------------------------
+      - name: Restore Hermes state
+        shell: bash
         run: |
+          set -euo pipefail
+
+          mkdir -p "$HERMES_HOME"
+          mkdir -p /tmp/hermes-restore
+
+          if [[ -z "${HERMES_BACKUP_KEY:-}" ]]; then
+            echo "ERROR: HERMES_BACKUP_KEY is not configured."
+            exit 1
+          fi
+
+          echo "Checking for previous Hermes backup..."
+
+          if gh release view hermes-state \
+              --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+
+            ASSET_NAME="$(
+              gh release view hermes-state \
+                --repo "$GITHUB_REPOSITORY" \
+                --json assets \
+                --jq '
+                  [.assets[]
+                   | select(.name | startswith("hermes-state-"))
+                  ]
+                  | sort_by(.updatedAt)
+                  | last
+                  | .name
+                '
+            )"
+
+            if [[ -n "$ASSET_NAME" && "$ASSET_NAME" != "null" ]]; then
+
+              echo "Restoring: $ASSET_NAME"
+
+              gh release download hermes-state \
+                --repo "$GITHUB_REPOSITORY" \
+                --pattern "$ASSET_NAME" \
+                --dir /tmp/hermes-restore
+
+              BACKUP_FILE="/tmp/hermes-restore/$ASSET_NAME"
+
+              if ! openssl enc -d \
+                  -aes-256-cbc \
+                  -pbkdf2 \
+                  -in "$BACKUP_FILE" \
+                  -out /tmp/hermes-state.tar.gz \
+                  -pass env:HERMES_BACKUP_KEY; then
+                echo "ERROR: Hermes backup decryption failed."
+                exit 1
+              fi
+
+              mkdir -p /tmp/hermes-extract
+              tar -xzf /tmp/hermes-state.tar.gz \
+                -C /tmp/hermes-extract
+
+              if [[ -d /tmp/hermes-extract/hermes ]]; then
+                cp -a /tmp/hermes-extract/hermes/. "$HERMES_HOME/"
+              else
+                echo "ERROR: Backup structure is invalid."
+                exit 1
+              fi
+
+              echo "Hermes state restored successfully."
+
+            else
+              echo "No previous state asset found."
+            fi
+          else
+            echo "No Hermes state release exists yet."
+          fi
+
+      # ------------------------------------------------------------
+      # HERMES CONFIG
+      # ------------------------------------------------------------
+      - name: Configure Hermes
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          mkdir -p "$HERMES_HOME"
+
+          python - <<'PY'
+          from pathlib import Path
+          import yaml
+
+          home = Path("/home/runner/.hermes")
+          config = home / "config.yaml"
+
+          if config.exists():
+              data = yaml.safe_load(config.read_text()) or {}
+          else:
+              data = {}
+
+          if not isinstance(data, dict):
+              data = {}
+
+          sessions = data.setdefault("sessions", {})
+
+          # IMPORTANT:
+          # Never automatically delete old sessions.
+          sessions["auto_prune"] = False
+
+          # Keep the current model/provider selection persistent.
+          model = data.setdefault("model", {})
+
+          if not model.get("provider"):
+              model["provider"] = "nvidia"
+
+          if not model.get("default"):
+              model["default"] = "openai/gpt-oss-20b"
+
+          providers = data.setdefault("providers", {})
+          if not isinstance(providers, dict):
+              providers = {}
+              data["providers"] = providers
+
+          # Keep the custom-model system enabled.
+          plugins = data.setdefault("plugins", {})
+          entries = plugins.setdefault("entries", {})
+
+          entries.setdefault("custom-model-manager", {})
+
+          config.write_text(
+              yaml.safe_dump(
+                  data,
+                  sort_keys=False,
+                  allow_unicode=True
+              )
+          )
+          PY
+
+          echo "Hermes configuration prepared."
+
+      # ------------------------------------------------------------
+      # CUSTOM MODEL MANAGER PLUGIN
+      # ------------------------------------------------------------
+      - name: Install custom model manager
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          PLUGIN="$HERMES_HOME/plugins/custom-model-manager"
+
+          mkdir -p "$PLUGIN"
+
+          cat > "$PLUGIN/plugin.yaml" <<'YAML'
+          name: custom-model-manager
+          version: 1.0.0
+          description: Personal model/provider manager
+          YAML
+
+          cat > "$PLUGIN/__init__.py" <<'PY'
+          from __future__ import annotations
+
+          import json
+          import os
+          import re
+          import shlex
+          from pathlib import Path
+          from urllib.parse import urlparse
+
+          import httpx
+          import yaml
+
+          HOME = Path(os.environ.get("HERMES_HOME", Path.home() / ".hermes"))
+          DATA_DIR = HOME / "plugin-data" / "custom-model-manager"
+          DATA_FILE = DATA_DIR / "models.json"
+          CONFIG_FILE = HOME / "config.yaml"
+          ENV_FILE = HOME / ".env"
+
+
+          def _ensure():
+              DATA_DIR.mkdir(parents=True, exist_ok=True)
+
+              if not DATA_FILE.exists():
+                  DATA_FILE.write_text(
+                      json.dumps(
+                          {
+                              "version": 1,
+                              "models": {}
+                          },
+                          indent=2,
+                          ensure_ascii=False,
+                      )
+                  )
+
+
+          def _load():
+              _ensure()
+
+              try:
+                  data = json.loads(DATA_FILE.read_text())
+                  if not isinstance(data, dict):
+                      raise ValueError
+              except Exception:
+                  data = {"version": 1, "models": {}}
+
+              data.setdefault("version", 1)
+              data.setdefault("models", {})
+
+              return data
+
+
+          def _save(data):
+              tmp = DATA_FILE.with_suffix(".tmp")
+
+              tmp.write_text(
+                  json.dumps(
+                      data,
+                      indent=2,
+                      ensure_ascii=False,
+                  )
+              )
+
+              tmp.replace(DATA_FILE)
+
+
+          def _load_config():
+              if CONFIG_FILE.exists():
+                  try:
+                      value = yaml.safe_load(CONFIG_FILE.read_text()) or {}
+                      if isinstance(value, dict):
+                          return value
+                  except Exception:
+                      pass
+
+              return {}
+
+
+          def _save_config(data):
+              tmp = CONFIG_FILE.with_suffix(".tmp")
+
+              tmp.write_text(
+                  yaml.safe_dump(
+                      data,
+                      sort_keys=False,
+                      allow_unicode=True,
+              ))
+
+              tmp.replace(CONFIG_FILE)
+
+
+          def _slug(value):
+              value = value.strip().lower()
+              value = re.sub(r"[^a-z0-9_-]+", "-", value)
+              value = value.strip("-_")
+
+              if not value:
+                  raise ValueError("Invalid model name.")
+
+              return value[:48]
+
+
+          def _valid_url(value):
+              parsed = urlparse(value)
+
+              return (
+                  parsed.scheme in {"https", "http"}
+                  and bool(parsed.netloc)
+              )
+
+
+          def _write_env(key_name, value):
+              lines = []
+
+              if ENV_FILE.exists():
+                  lines = ENV_FILE.read_text().splitlines()
+
+              prefix = key_name + "="
+
+              lines = [
+                  line
+                  for line in lines
+                  if not line.startswith(prefix)
+              ]
+
+              lines.append(f"{key_name}={value}")
+
+              ENV_FILE.write_text("\n".join(lines) + "\n")
+
+              # Make the new credential available immediately
+              # to this Hermes process.
+              os.environ[key_name] = value
+
+
+          def _configure_provider(entry):
+              config = _load_config()
+
+              providers = config.setdefault("providers", {})
+
+              if not isinstance(providers, dict):
+                  providers = {}
+                  config["providers"] = providers
+
+              name = entry["name"]
+              slug = entry["slug"]
+
+              key_env = f"HERMES_CUSTOM_MODEL_{slug.upper().replace('-', '_')}_KEY"
+
+              providers[name] = {
+                  "name": name,
+                  "api": entry["base_url"],
+                  "key_env": key_env,
+                  "transport": entry.get(
+                      "transport",
+                      "chat_completions",
+                  ),
+                  "default_model": entry["model"],
+                  "models": {
+                      entry["model"]: {}
+                  },
+              }
+
+              _save_config(config)
+
+              return key_env
+
+
+          def _handle_add(raw):
+              """
+              /addmodel "NAME" "BASE_URL" "MODEL" "API_KEY"
+              Optional fifth argument:
+              "chat_completions" or "anthropic_messages"
+              """
+
+              try:
+                  args = shlex.split(raw)
+
+                  if len(args) not in {4, 5}:
+                      return (
+                          "Usage:\n"
+                          "/addmodel \"Name\" \"Base URL\" \"Model\" \"API Key\" "
+                          "[transport]"
+                      )
+
+                  name, base_url, model, api_key = args[:4]
+                  transport = (
+                      args[4]
+                      if len(args) == 5
+                      else "chat_completions"
+                  )
+
+                  if transport not in {
+                      "chat_completions",
+                      "anthropic_messages",
+                  }:
+                      return "❌ Unsupported transport."
+
+                  if not _valid_url(base_url):
+                      return "❌ Base URL is invalid."
+
+                  if not model.strip():
+                      return "❌ Model name is empty."
+
+                  if not api_key.strip():
+                      return "❌ API key is empty."
+
+                  slug = _slug(name)
+
+                  data = _load()
+
+                  data["models"][slug] = {
+                      "name": name,
+                      "slug": slug,
+                      "base_url": base_url.rstrip("/"),
+                      "model": model,
+                      "transport": transport,
+                  }
+
+                  key_env = _configure_provider(data["models"][slug])
+
+                  _write_env(key_env, api_key)
+
+                  _save(data)
+
+                  return (
+                      f"✅ Model added.\n\n"
+                      f"Name: {name}\n"
+                      f"Model: {model}\n"
+                      f"Provider: custom:{name}\n\n"
+                      f"برای استفاده در همین Hermes:\n"
+                      f"/model --provider custom:{name} {model}"
+                  )
+
+              except Exception as exc:
+                  return f"❌ Add model failed: {exc}"
+
+
+          def _handle_list(raw):
+              data = _load()
+
+              models = data.get("models", {})
+
+              if not models:
+                  return (
+                      "هیچ مدل شخصی ثبت نشده.\n\n"
+                      "برای افزودن:\n"
+                      "/addmodel \"Name\" \"https://.../v1\" "
+                      "\"model-id\" \"API_KEY\""
+                  )
+
+              config = _load_config()
+              current = config.get("model", {})
+              current_provider = (
+                  current.get("provider")
+                  if isinstance(current, dict)
+                  else ""
+              )
+              current_model = (
+                  current.get("default")
+                  if isinstance(current, dict)
+                  else ""
+              )
+
+              lines = ["مدل‌های شخصی شما:\n"]
+
+              for item in models.values():
+                  marker = ""
+
+                  if (
+                      current_provider == f"custom:{item['name']}"
+                      and current_model == item["model"]
+                  ):
+                      marker = " ⭐ فعال"
+
+                  lines.append(
+                      f"• {item['name']}{marker}\n"
+                      f"  {item['model']}\n"
+                      f"  custom:{item['name']}"
+                  )
+
+              lines.append(
+                  "\nبرای تست:\n"
+                  "/testmodel NAME"
+              )
+
+              lines.append(
+                  "\nبرای استفاده:\n"
+                  "/model --provider custom:NAME MODEL"
+              )
+
+              return "\n".join(lines)
+
+
+          async def _test(entry):
+              url = entry["base_url"].rstrip("/")
+
+              if not url.endswith("/v1"):
+                  base = url + "/v1"
+              else:
+                  base = url
+
+              endpoint = base + "/chat/completions"
+
+              slug = entry["slug"]
+              env_name = (
+                  "HERMES_CUSTOM_MODEL_"
+                  + slug.upper().replace("-", "_")
+                  + "_KEY"
+              )
+
+              api_key = os.environ.get(env_name, "")
+
+              if not api_key:
+                  return "❌ API key is not available in this Hermes process."
+
+              headers = {
+                  "Authorization": f"Bearer {api_key}",
+                  "Content-Type": "application/json",
+              }
+
+              payload = {
+                  "model": entry["model"],
+                  "messages": [
+                      {
+                          "role": "user",
+                          "content": "Reply only with OK.",
+                      }
+                  ],
+                  "max_tokens": 8,
+              }
+
+              try:
+                  async with httpx.AsyncClient(timeout=30) as client:
+                      response = await client.post(
+                          endpoint,
+                          headers=headers,
+                          json=payload,
+                      )
+
+                  if response.is_success:
+                      return (
+                          f"✅ Model works.\n"
+                          f"Provider: {entry['name']}\n"
+                          f"Model: {entry['model']}\n"
+                          f"HTTP: {response.status_code}"
+                      )
+
+                  text = response.text[:700]
+
+                  return (
+                      f"❌ Model test failed.\n"
+                      f"HTTP: {response.status_code}\n"
+                      f"{text}"
+                  )
+
+              except Exception as exc:
+                  return f"❌ Connection failed: {exc}"
+
+
+          async def _handle_test(raw):
+              name = raw.strip()
+
+              if not name:
+                  return "Usage: /testmodel NAME"
+
+              data = _load()
+
+              entry = None
+
+              for item in data["models"].values():
+                  if (
+                      item["name"].lower() == name.lower()
+                      or item["slug"].lower() == name.lower()
+                  ):
+                      entry = item
+                      break
+
+              if entry is None:
+                  return f"❌ Model '{name}' not found."
+
+              return await _test(entry)
+
+
+          def register(ctx):
+              ctx.register_command(
+                  "addmodel",
+                  handler=_handle_add,
+                  description="Add a personal AI model/provider",
+              )
+
+              ctx.register_command(
+                  "mymodel",
+                  handler=_handle_list,
+                  description="List personal AI models",
+              )
+
+              ctx.register_command(
+                  "testmodel",
+                  handler=_handle_test,
+                  description="Test a personal AI model",
+              )
+          PY
+
+          echo "Custom model manager installed."
+
+      # ------------------------------------------------------------
+      # VALIDATE PLUGIN BEFORE START
+      # ------------------------------------------------------------
+      - name: Validate Hermes plugin
+        shell: bash
+        run: |
+          set -euo pipefail
+
           cd /tmp/hermes
-          hermes gateway run
+
+          python -m py_compile \
+            "$HERMES_HOME/plugins/custom-model-manager/__init__.py"
+
+          echo "Plugin syntax check passed."
+
+      # ------------------------------------------------------------
+      # PERIODIC BACKUP
+      # ------------------------------------------------------------
+      - name: Start Hermes with persistent backup
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [[ -z "${HERMES_BACKUP_KEY:-}" ]]; then
+            echo "ERROR: HERMES_BACKUP_KEY is missing."
+            exit 1
+          fi
+
+          REPO="$GITHUB_REPOSITORY"
+          RELEASE_TAG="hermes-state"
+
+          create_release_if_needed() {
+            if ! gh release view "$RELEASE_TAG" \
+                --repo "$REPO" >/dev/null 2>&1; then
+
+              gh release create "$RELEASE_TAG" \
+                --repo "$REPO" \
+                --target "$GITHUB_SHA" \
+                --title "Hermes Persistent State" \
+                --notes "Automated encrypted Hermes state backup." \
+                --latest=false
+            fi
+          }
+
+          backup_state() {
+            set +e
+
+            echo "========================================"
+            echo "Creating Hermes state backup..."
+            echo "========================================"
+
+            WORK="/tmp/hermes-backup"
+            SNAP="$WORK/hermes"
+            DBROOT="$WORK/db-snapshot"
+
+            rm -rf "$WORK"
+            mkdir -p "$SNAP"
+            mkdir -p "$DBROOT"
+
+            # Copy non-database persistent Hermes data.
+            rsync -a \
+              --exclude='logs/' \
+              --exclude='cache/' \
+              --exclude='media/' \
+              --exclude='checkpoints/' \
+              --exclude='*.db' \
+              --exclude='*.db-wal' \
+              --exclude='*.db-shm' \
+              "$HERMES_HOME/" "$SNAP/"
+
+            # Safely snapshot every SQLite database while Hermes is running.
+            python - "$HERMES_HOME" "$DBROOT" <<'PY'
+          import sqlite3
+          import sys
+          from pathlib import Path
+
+          home = Path(sys.argv[1])
+          out = Path(sys.argv[2])
+
+          for source in home.rglob("*.db"):
+              relative = source.relative_to(home)
+              target = out / relative
+              target.parent.mkdir(parents=True, exist_ok=True)
+
+              try:
+                  src = sqlite3.connect(
+                      f"file:{source}?mode=ro",
+                      uri=True,
+                      timeout=30,
+                  )
+
+                  dst = sqlite3.connect(target)
+
+                  with dst:
+                      src.backup(dst)
+
+                  dst.close()
+                  src.close()
+
+                  print(f"SQLite snapshot OK: {relative}")
+
+              except Exception as exc:
+                  print(
+                      f"SQLite snapshot FAILED: {relative}: {exc}",
+                      file=sys.stderr,
+                  )
+                  raise
+          PY
+
+            rsync -a "$DBROOT/" "$SNAP/"
+
+            # Make sure the important database exists.
+            if [[ ! -f "$SNAP/state.db" ]]; then
+              echo "WARNING: state.db was not found in snapshot."
+              return 1
+            fi
+
+            # Create compressed archive.
+            tar -czf "$WORK/hermes-state.tar.gz" \
+              -C "$WORK" hermes
+
+            # Encrypt the archive.
+            SLOT="$(( $(date +%s) / 600 % 2 + 1 ))"
+
+            OUT="$WORK/hermes-state-${SLOT}.tar.gz.enc"
+
+            openssl enc \
+              -aes-256-cbc \
+              -pbkdf2 \
+              -salt \
+              -in "$WORK/hermes-state.tar.gz" \
+              -out "$OUT" \
+              -pass env:HERMES_BACKUP_KEY
+
+            # Verify that the encrypted archive is readable
+            # before uploading it.
+            openssl enc -d \
+              -aes-256-cbc \
+              -pbkdf2 \
+              -in "$OUT" \
+              -out "$WORK/verify.tar.gz" \
+              -pass env:HERMES_BACKUP_KEY >/dev/null
+
+            tar -tzf "$WORK/verify.tar.gz" >/dev/null
+
+            create_release_if_needed
+
+            # Do NOT delete the other slot.
+            # If this upload fails, the previous slot remains intact.
+            gh release upload "$RELEASE_TAG" \
+              "$OUT" \
+              --repo "$REPO" \
+              --clobber
+
+            echo "Hermes backup uploaded successfully."
+
+            rm -rf "$WORK"
+
+            set -e
+          }
+
+          # Initial backup before Hermes starts.
+          backup_state
+
+          # Continue backing up every 10 minutes.
+          (
+            while true; do
+              sleep 600
+              backup_state
+            done
+          ) &
+
+          BACKUP_PID=$!
+
+          trap 'kill "$BACKUP_PID" 2>/dev/null || true' EXIT
+
+          cd /tmp/hermes
+
+          echo "Starting Hermes Gateway..."
+
+          timeout --signal=TERM --kill-after=30s 330m \
+            hermes gateway run
+
+      # ------------------------------------------------------------
+      # FINAL BACKUP
+      # ------------------------------------------------------------
+      - name: Final Hermes backup
+        if: ${{ !cancelled() }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo "Final backup is handled by the periodic backup cycle."
+          echo "Hermes state remains stored in the encrypted GitHub Release."
+```
