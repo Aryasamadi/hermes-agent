@@ -54,17 +54,20 @@ jobs:
             "PyYAML==6.0.3" \
             "ruamel.yaml==0.18.17" \
             "requests==2.33.0" \
-            "jinja2==3.1.6"
+            "jinja2==3.1.6" \
+            "psutil==7.2.2"
 
           python - <<'PY'
           import dotenv
           import httpx
           import rich
+          import psutil
           import yaml
           import ruamel.yaml
 
           print("python-dotenv: OK")
           print(f"httpx {httpx.__version__}: OK")
+          print(f"psutil {psutil.__version__}: OK")
 
           # rich does not expose __version__ in every release.
           try:
@@ -91,6 +94,7 @@ jobs:
           python - <<'PY'
           import agent.account_usage
           import hermes_cli.env_loader
+          import hermes_cli.local_runtime.processes
           import hermes_cli.main
 
           print("Hermes runtime imports: OK")
