@@ -65,7 +65,18 @@ jobs:
 
           print("python-dotenv: OK")
           print(f"httpx {httpx.__version__}: OK")
-          print(f"rich {rich.__version__}: OK")
+
+          # rich does not expose __version__ in every release.
+          try:
+              rich_version = rich.__version__
+          except AttributeError:
+              try:
+                  from importlib.metadata import version
+                  rich_version = version("rich")
+              except Exception:
+                  rich_version = "unknown"
+          print(f"rich {rich_version}: OK")
+
           print(f"PyYAML {yaml.__version__}: OK")
           print(f"ruamel.yaml {ruamel.yaml.__version__}: OK")
           PY
