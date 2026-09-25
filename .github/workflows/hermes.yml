@@ -34,20 +34,59 @@ jobs:
 
           git clone https://github.com/NousResearch/hermes-agent.git /tmp/hermes
           cd /tmp/hermes
-          python -m pip install -e .
+          python -m pip install --upgrade pip setuptools wheel
 
-          python -m pip install "PyYAML>=6.0,<7" "ruamel.yaml>=0.18,<0.19" "rich>=10.0" "python-dotenv"
+          # Hermes is used through the Telegram gateway, so install the
+          # messaging extra instead of only the bare package.
+          python -m pip install -e ".[messaging]"
+
+          # CI safety net: install Hermes' current core runtime pins
+          # explicitly. This prevents a partial editable install from
+          # reaching the gateway with missing modules.
+          python -m pip install \
+            "openai==2.24.0" \
+            "certifi==2026.5.20" \
+            "python-dotenv==1.2.2" \
+            "fire==0.7.1" \
+            "httpx[socks]==0.28.1" \
+            "rich==14.3.3" \
+            "tenacity==9.1.4" \
+            "PyYAML==6.0.3" \
+            "ruamel.yaml==0.18.17" \
+            "requests==2.33.0" \
+            "jinja2==3.1.6"
 
           python - <<'PY'
           import dotenv
+          import httpx
           import rich
           import yaml
           import ruamel.yaml
-          print(f"python-dotenv {getattr(dotenv, '__version__', 'installed')} is available")
-          print(f"rich {getattr(rich, '__version__', 'installed')} is available")
-          print(f"PyYAML {yaml.__version__} is available")
-          print(f"ruamel.yaml {ruamel.yaml.__version__} is available")
+
+          print("python-dotenv: OK")
+          print(f"httpx {httpx.__version__}: OK")
+          print(f"rich {rich.__version__}: OK")
+          print(f"PyYAML {yaml.__version__}: OK")
+          print(f"ruamel.yaml {ruamel.yaml.__version__}: OK")
           PY
+
+      - name: Preflight Hermes runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cd /tmp/hermes
+
+          python - <<'PY'
+          import agent.account_usage
+          import hermes_cli.env_loader
+          import hermes_cli.main
+
+          print("Hermes runtime imports: OK")
+          PY
+
+          hermes --help >/dev/null
+          echo "Hermes CLI preflight: OK"
 
       - name: Restore Hermes state
         shell: bash
