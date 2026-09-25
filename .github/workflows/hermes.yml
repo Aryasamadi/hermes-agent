@@ -1,3 +1,4 @@
+
 name: Hermes Agent
 
 on:
@@ -38,9 +39,16 @@ jobs:
 
           python -m pip install "PyYAML>=6.0,<7" "ruamel.yaml>=0.18,<0.19"
 
+          # Fix for hermes_cli.env_loader:
+          # it imports the dotenv module at startup.
+          python -m pip install python-dotenv
+
           python - <<'PY'
+          import dotenv
           import yaml
           import ruamel.yaml
+
+          print(f"python-dotenv {getattr(dotenv, '__version__', 'installed')} is available")
           print(f"PyYAML {yaml.__version__} is available")
           print(f"ruamel.yaml {ruamel.yaml.__version__} is available")
           PY
