@@ -36,11 +36,13 @@ jobs:
           cd /tmp/hermes
           python -m pip install -e .
 
-          python -m pip install "PyYAML>=6.0,<7"
+          python -m pip install "PyYAML>=6.0,<7" "ruamel.yaml>=0.18,<0.19"
 
           python - <<'PY'
           import yaml
+          import ruamel.yaml
           print(f"PyYAML {yaml.__version__} is available")
+          print(f"ruamel.yaml {ruamel.yaml.__version__} is available")
           PY
 
       - name: Restore Hermes state
