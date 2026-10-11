@@ -98,6 +98,8 @@ def _add_provider(name: str, base_url: str, model: str, api_key: str) -> str:
     previous_provider = providers.get(slug)
     previous_record = _load_registry()
     previous_item = previous_record["models"].get(slug)
+    previous_env = ENV_FILE.read_text(encoding="utf-8") if ENV_FILE.exists() else None
+    previous_value = os.environ.get(env_name)
 
     providers[slug] = candidate
     try:
@@ -112,7 +114,7 @@ def _add_provider(name: str, base_url: str, model: str, api_key: str) -> str:
         }
         _save_registry(previous_record)
     except Exception:
-        # Best-effort rollback of the provider registry/config if a write fails.
+        # Roll back all touched state best-effort if any write fails.
         try:
             config = _load_config()
             providers = config.get("providers", {})
@@ -122,6 +124,32 @@ def _add_provider(name: str, base_url: str, model: str, api_key: str) -> str:
                 else:
                     providers[slug] = previous_provider
                 _save_config(config)
+        except Exception:
+            pass
+        try:
+            if previous_env is None:
+                ENV_FILE.unlink(missing_ok=True)
+            else:
+                temp = ENV_FILE.with_suffix(".env.rollback")
+                temp.write_text(previous_env, encoding="utf-8")
+                temp.replace(ENV_FILE)
+                try:
+                    ENV_FILE.chmod(0o600)
+                except OSError:
+                    pass
+            if previous_value is None:
+                os.environ.pop(env_name, None)
+            else:
+                os.environ[env_name] = previous_value
+        except Exception:
+            pass
+        try:
+            registry = _load_registry()
+            if previous_item is None:
+                registry["models"].pop(slug, None)
+            else:
+                registry["models"][slug] = previous_item
+            _save_registry(registry)
         except Exception:
             pass
         raise
@@ -208,7 +236,8 @@ async def _handle_test(raw_args: str) -> str:
         # Avoid echoing a provider's full response body into Telegram; it can contain sensitive diagnostics.
         return f"❌ Model test failed. HTTP {response.status_code}. Check the endpoint, key, and model ID."
     except Exception as exc:
-        return f"❌ Model test failed: {type(exc).__name__}: {exc}"
+        # Do not echo exception details into chat; they may contain endpoint or request diagnostics.
+        return f"❌ Model test failed ({type(exc).__name__}). Check the URL, key, model ID, and network."
 
 
 def _active_default_matches(slug: str, item: dict, config: dict) -> bool:
