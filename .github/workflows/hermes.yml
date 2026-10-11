@@ -131,7 +131,7 @@ jobs:
             exit 1
           fi
 
-          "$runtime_python" - <<'PY'
+          cat > /tmp/hermes-runtime-check.py <<'PY'
           import snowballstemmer
           import pydantic_core._pydantic_core
           import hermes_cli.main
@@ -142,6 +142,7 @@ jobs:
           print('pydantic-core native extension: OK')
           print('Hermes CLI imports: OK')
           PY
+          "$runtime_python" /tmp/hermes-runtime-check.py
 
           "$runtime_python" -m py_compile "$HERMES_HOME/plugins/custom-model-manager/__init__.py"
           hermes --help >/dev/null
