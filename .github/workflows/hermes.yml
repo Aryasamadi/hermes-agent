@@ -137,7 +137,7 @@ jobs:
           import hermes_cli.main
           import httpx
           from importlib.metadata import version
-print(f'snowballstemmer {version("snowballstemmer")}: OK')
+          print(f'snowballstemmer {version("snowballstemmer")}: OK')
           print(f'httpx {httpx.__version__}: OK')
           print('pydantic-core native extension: OK')
           print('Hermes CLI imports: OK')
