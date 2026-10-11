@@ -147,10 +147,22 @@ jobs:
           if not isinstance(sessions, dict):
               raise SystemExit('ERROR: config.yaml sessions section is not a mapping; refusing to overwrite it.')
           sessions['auto_prune'] = False
+
+          # Keep slash-command model switches synchronized with config.yaml by
+          # default. Hermes otherwise switches only the current chat, leaving
+          # the saved default provider looking active to the removal command.
+          model = config.setdefault('model', {})
+          if model is None:
+              model = {}
+              config['model'] = model
+          if not isinstance(model, dict):
+              raise SystemExit('ERROR: config.yaml model section is not a mapping; refusing to overwrite it.')
+          model['persist_switch_by_default'] = True
+
           tmp = path.with_suffix('.yaml.tmp')
           tmp.write_text(yaml.safe_dump(config, sort_keys=False, allow_unicode=True))
           tmp.replace(path)
-          print('Persistent sessions enabled; existing config keys preserved.')
+          print('Persistent sessions enabled; slash-command model switches persist by default; existing config keys preserved.')
           PY
 
       - name: Install custom model manager
@@ -327,38 +339,108 @@ jobs:
               return await _test_item(item)
 
           def _handle_remove(raw_args):
+              """Remove a provider registered by this plugin, with an active-default guard."""
               try:
-                  slug = _slug(raw_args.strip())
-                  if not raw_args.strip():
-                      return "Usage: /removemodel PROVIDER"
+                  args = shlex.split(raw_args.strip())
+                  if len(args) != 1:
+                      return (
+                          "Usage: /removemodel PROVIDER\n"
+                          "   or: /removeprovider PROVIDER\n\n"
+                          "Use the provider ID shown by /mymodel, e.g. vyceai."
+                      )
+
+                  requested = args[0].strip()
+                  # Accept provider ID forms such as vyceai, custom:vyceai, or
+                  # custom:vyceai:model-name.
+                  if requested.startswith("custom:"):
+                      parts = requested.split(":")
+                      if len(parts) >= 2:
+                          requested = parts[1]
+                  slug = _slug(requested)
+
                   data = _load()
                   item = data["models"].get(slug)
                   if item is None:
-                      return "❌ This provider is not registered by custom-model-manager; nothing was changed."
+                      matches = [
+                          (key, value) for key, value in data["models"].items()
+                          if str(value.get("name", "")).strip().casefold() == requested.casefold()
+                      ]
+                      if len(matches) == 1:
+                          slug, item = matches[0]
+                      else:
+                          return (
+                              f"❌ Provider '{requested}' is not registered by this plugin.\n"
+                              "Use /mymodel to see the exact provider ID. Nothing was changed."
+                          )
+
                   config = _load_config()
                   model_cfg = config.get("model", {})
-                  if isinstance(model_cfg, dict) and model_cfg.get("provider") in (slug, f"custom:{slug}"):
-                      return "⚠️ This provider appears to be active. Switch to another model first, then retry /removemodel."
                   providers = config.get("providers", {})
-                  if isinstance(providers, dict):
-                      providers.pop(slug, None)
+                  provider_cfg = providers.get(slug, {}) if isinstance(providers, dict) else {}
+                  configured_provider = ""
+                  active_default = ""
+                  active_url = ""
+                  if isinstance(model_cfg, dict):
+                      configured_provider = str(model_cfg.get("provider", "")).strip().lower()
+                      active_default = str(model_cfg.get("default", "")).strip()
+                      active_url = str(model_cfg.get("base_url", "")).strip().rstrip("/")
+
+                  provider_api = ""
+                  if isinstance(provider_cfg, dict):
+                      provider_api = str(provider_cfg.get("api", provider_cfg.get("base_url", ""))).strip().rstrip("/")
+                  item_api = str(item.get("base_url", "")).strip().rstrip("/")
+                  target_names = {slug.lower(), f"custom:{slug}".lower()}
+                  configured_custom_name = (
+                      configured_provider.startswith("custom:")
+                      and configured_provider.split(":", 1)[1].split(":", 1)[0] == slug.lower()
+                  )
+                  active_by_url = bool(active_url and active_url in (provider_api, item_api))
+                  active_by_model = bool(active_default and active_default == str(item.get("model", "")))
+                  is_saved_default = (
+                      configured_provider in target_names
+                      or configured_custom_name
+                      or (configured_provider == "custom" and active_by_url)
+                      or (configured_provider in ("custom", "") and active_by_url and active_by_model)
+                  )
+
+                  if is_saved_default:
+                      return (
+                          "⚠️ این Provider هنوز مدل پیش‌فرض ذخیره‌شدهٔ Hermes است؛ تغییر معمولی /model ممکن است فقط برای همین گفت‌وگو باشد.\n\n"
+                          "ابتدا مدل دیگری را به‌صورت سراسری انتخاب کن:\n"
+                          "/model <provider>:<model> --global\n\n"
+                          f"سپس دوباره /removeprovider {slug} را اجرا کن.\n"
+                          "در Workflow جدید، تغییرهای /model به‌طور پیش‌فرض ذخیره می‌شوند؛ پس بعد از اجرای Workflow یک‌بار مدل دیگری را انتخاب کن."
+                      )
+
+                  if not isinstance(providers, dict):
+                      raise ValueError("config.yaml providers section is not a mapping")
+                  providers.pop(slug, None)
                   _save_config(config)
-                  env_name = item.get("key_env", "")
+
+                  env_name = str(item.get("key_env", "")).strip()
                   if env_name:
                       lines = ENV_FILE.read_text().splitlines() if ENV_FILE.exists() else []
-                      ENV_FILE.write_text("\n".join(line for line in lines if not line.startswith(env_name + "=")) + ("\n" if any(not line.startswith(env_name + "=") for line in lines) else ""))
+                      kept = [line for line in lines if not line.startswith(env_name + "=")]
+                      if kept:
+                          ENV_FILE.write_text("\n".join(kept) + "\n")
+                      elif ENV_FILE.exists():
+                          ENV_FILE.unlink()
                       os.environ.pop(env_name, None)
+
                   del data["models"][slug]
                   _save(data)
-                  return f"✅ Removed registered provider '{slug}' from local Hermes config. If its API still advertises the model, live discovery may make it visible again."
+                  return (
+                      f"✅ Provider '{slug}' از فهرست ثبت‌شده و تنظیمات محلی حذف شد.\n"
+                      "اگر API همان مدل را در /models خودش منتشر کند، به‌دلیل Live Discovery ممکن است Hermes دوباره آن را کشف کند."
+                  )
               except Exception as exc:
                   return f"❌ Could not remove provider: {exc}"
-
           def register(ctx):
               ctx.register_command("addmodel", _handle_add, description="Add an OpenAI-compatible AI provider/model", args_hint='<name> <url> <model> <api-key>')
               ctx.register_command("mymodel", _handle_list, description="List registered personal AI providers/models")
               ctx.register_command("testmodel", _handle_test, description="Test a registered AI provider/model", args_hint="<provider>")
               ctx.register_command("removemodel", _handle_remove, description="Remove a provider registered by this plugin", args_hint="<provider>")
+              ctx.register_command("removeprovider", _handle_remove, description="Remove a registered custom provider (alias of /removemodel)", args_hint="<provider>")
           PY
           python -m py_compile "$PLUGIN_DIR/__init__.py"
           echo 'Custom model manager installed.'
