@@ -116,7 +116,7 @@ jobs:
           export PATH="$HOME/.local/bin:$PATH"
           cd "$HERMES_HOME/hermes-agent"
 
-          runtime_python="$(PYTHONPATH="$HERMES_HOME/hermes-agent" python3 - <<'PY'
+          runtime_python="$(PYTHONPATH="$HERMES_HOME/hermes-agent" /usr/bin/python3 - <<'PY'
           from pathlib import Path
           from pm.environments import selected_venv
           venv = selected_venv(Path.cwd())
@@ -151,7 +151,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          python3 - <<'PY'
+          /usr/bin/python3 - <<'PY'
           import os
           import sqlite3
           from pathlib import Path
@@ -205,7 +205,7 @@ jobs:
               "$HERMES_HOME/" "$work/hermes/"
 
             # Snapshot every SQLite DB using SQLite's online backup API.
-            python3 - <<'PY'
+            /usr/bin/python3 - <<'PY'
           import os
           import sqlite3
           from pathlib import Path
@@ -227,7 +227,7 @@ jobs:
                   raise SystemExit(f'ERROR: Could not snapshot {relative}: {exc}')
           PY
 
-            python3 - <<'PY'
+            /usr/bin/python3 - <<'PY'
           import sqlite3
           from pathlib import Path
           root = Path('/tmp/hermes-backup/hermes')
