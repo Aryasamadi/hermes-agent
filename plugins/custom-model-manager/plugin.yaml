@@ -1,0 +1,3 @@
+name: custom-model-manager
+version: "2.0.0"
+description: Manage personal OpenAI-compatible providers and models
