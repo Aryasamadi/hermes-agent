@@ -249,20 +249,38 @@ jobs:
             if ! gh release view hermes-state --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
               gh release create hermes-state --repo "$GITHUB_REPOSITORY" \
                 --title 'Hermes Persistent State' \
-                --notes 'Encrypted Hermes state backup; latest verified upload is retained.' \
+                --notes 'Encrypted Hermes state backup; recent verified backups are retained.' \
                 --latest=false
             fi
 
             local name="hermes-state-$(date -u +%Y%m%d-%H%M%S).enc"
             mv "$work/hermes-state.enc" "$work/$name"
+
+            # Make room BEFORE uploading. GitHub rejects uploads once a release
+            # already has 1,000 assets, so post-upload cleanup alone is too late.
+            local asset_count oldest_asset
+            asset_count="$(gh release view hermes-state --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets | length')"
+            while [ "$asset_count" -ge 1000 ]; do
+              oldest_asset="$(gh release view hermes-state --repo "$GITHUB_REPOSITORY" --json assets --jq '[.assets[] | select(.name | startswith("hermes-state-") and endswith(".enc"))] | sort_by(.createdAt) | .[0].name // empty')"
+              if [ -z "$oldest_asset" ]; then
+                echo "ERROR: Release has $asset_count assets and no old Hermes backup asset can safely be removed."
+                return 1
+              fi
+              echo "Release asset limit reached; removing oldest backup before upload: $oldest_asset"
+              gh release delete-asset hermes-state "$oldest_asset" --repo "$GITHUB_REPOSITORY" --yes
+              asset_count="$(gh release view hermes-state --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets | length')"
+            done
+
+            # Upload the new encrypted snapshot before routine retention cleanup.
             gh release upload hermes-state "$work/$name" --repo "$GITHUB_REPOSITORY"
 
-            # Delete old assets only after the new encrypted backup uploaded successfully.
+            # Keep the 200 newest encrypted backups; preserve unrelated release assets.
+            # Correct gh syntax is: gh release delete-asset <release-tag> <asset-name>.
             local old_assets
-            old_assets="$(gh release view hermes-state --repo "$GITHUB_REPOSITORY" --json assets --jq '[.assets[].name | select(startswith("hermes-state-") and endswith(".enc")) | select(. != "'"$name"'")] | .[]')"
+            old_assets="$(gh release view hermes-state --repo "$GITHUB_REPOSITORY" --json assets --jq '[.assets[] | select(.name | startswith("hermes-state-") and endswith(".enc"))] | sort_by(.createdAt) | reverse | .[200:] | .[].name')"
             while IFS= read -r old; do
               [ -n "$old" ] || continue
-              gh release delete-asset "$old" --repo "$GITHUB_REPOSITORY" --yes \
+              gh release delete-asset hermes-state "$old" --repo "$GITHUB_REPOSITORY" --yes \
                 || echo "WARNING: Could not delete old backup asset $old"
             done <<< "$old_assets"
             echo "Encrypted backup uploaded: $name"
