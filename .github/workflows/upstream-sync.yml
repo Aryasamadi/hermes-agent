@@ -2,6 +2,9 @@ name: Sync Hermes upstream
 
 on:
   workflow_dispatch:
+  push:
+    paths:
+      - ".github/workflows/upstream-sync.yml"
   schedule:
     - cron: "17 5 * * *"
 
