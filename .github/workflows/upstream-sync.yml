@@ -31,7 +31,7 @@ jobs:
           git remote add upstream https://github.com/NousResearch/hermes-agent.git
           git fetch upstream main
 
-      - name: Merge upstream into review branch
+      - name: Prepare upstream review snapshot
         id: merge
         shell: bash
         run: |
@@ -40,20 +40,35 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git fetch origin main
+          git fetch upstream main
           git checkout -B "$branch" origin/main
 
-          if git merge-base --is-ancestor upstream/main HEAD; then
+          # This fork owns its GitHub Actions workflows. Compare and sync upstream
+          # source while deliberately excluding .github/workflows to avoid needing
+          # elevated workflow-file permissions for the default GITHUB_TOKEN.
+          if git diff --quiet origin/main upstream/main -- . ':(exclude).github/workflows/**'; then
             echo "changed=false" >> "$GITHUB_OUTPUT"
-            echo "Fork already contains all upstream commits."
+            echo "No upstream changes outside GitHub Actions workflow files."
             exit 0
           fi
 
-          if ! git merge --no-edit upstream/main; then
-            git merge --abort || true
-            echo "::error::Upstream merge has conflicts. No branch was pushed; resolve the conflicts manually."
+          if ! git merge --squash --no-commit upstream/main; then
+            git reset --hard origin/main
+            echo "::error::Upstream sync has conflicts. No branch was pushed; resolve conflicts manually."
             exit 1
           fi
 
+          # Keep this fork's workflow definitions exactly as they are on main.
+          git checkout origin/main -- .github/workflows/
+          git add -A
+
+          if git diff --cached --quiet; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "No effective changes after preserving fork-specific workflows."
+            exit 0
+          fi
+
+          git commit -m "chore: propose upstream sync $(git rev-parse --short upstream/main)"
           echo "changed=true" >> "$GITHUB_OUTPUT"
 
       - name: Push review branch
