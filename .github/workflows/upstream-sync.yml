@@ -1,0 +1,80 @@
+name: Sync Hermes upstream
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "17 5 * * *"
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: hermes-upstream-sync
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout fork with history
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ github.token }}
+
+      - name: Fetch official upstream
+        shell: bash
+        run: |
+          set -euo pipefail
+          git remote add upstream https://github.com/NousResearch/hermes-agent.git
+          git fetch upstream main
+
+      - name: Merge upstream into review branch
+        id: merge
+        shell: bash
+        run: |
+          set -euo pipefail
+          branch="automation/upstream-sync"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git fetch origin main
+          git checkout -B "$branch" origin/main
+
+          if git merge-base --is-ancestor upstream/main HEAD; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "Fork already contains all upstream commits."
+            exit 0
+          fi
+
+          if ! git merge --no-edit upstream/main; then
+            git merge --abort || true
+            echo "::error::Upstream merge has conflicts. No branch was pushed; resolve the conflicts manually."
+            exit 1
+          fi
+
+          echo "changed=true" >> "$GITHUB_OUTPUT"
+
+      - name: Push review branch
+        if: steps.merge.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          git push --force-with-lease origin automation/upstream-sync
+
+      - name: Open or update upstream review PR
+        if: steps.merge.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          existing="$(gh pr list --repo "$GITHUB_REPOSITORY" --head "$GITHUB_REPOSITORY_OWNER:automation/upstream-sync" --base main --state open --json number --jq '.[0].number // empty')"
+          if [ -n "$existing" ]; then
+            echo "Updated existing upstream sync PR #$existing."
+          else
+            gh pr create               --repo "$GITHUB_REPOSITORY"               --base main               --head automation/upstream-sync               --title "chore: sync official Hermes upstream"               --body "Automated proposal to merge NousResearch/hermes-agent main into this fork. Review the diff and run the Telegram gateway checks before merging. This PR does not auto-merge."
+          fi
