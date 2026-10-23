@@ -62,6 +62,11 @@ jobs:
           fi
 
           # Keep this fork's workflow definitions exactly as they are on main.
+          # Remove upstream-added workflow files too; checkout alone would leave
+          # untracked files (such as archive-inputs.yml) in the working tree.
+          if [ -d .github/workflows ]; then
+            find .github/workflows -type f -delete
+          fi
           git checkout origin/main -- .github/workflows/
           git add -A
 
