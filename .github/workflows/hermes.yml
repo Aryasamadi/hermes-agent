@@ -17,7 +17,6 @@ jobs:
 
     env:
       HERMES_HOME: /home/runner/.hermes
-      NVIDIA_API_KEY: ${{ secrets.NVIDIA_API_KEY }}
       TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
       TELEGRAM_ALLOWED_USERS: ${{ secrets.TELEGRAM_ALLOWED_USER_ID }}
       HERMES_BACKUP_KEY: ${{ secrets.HERMES_BACKUP_KEY }}
