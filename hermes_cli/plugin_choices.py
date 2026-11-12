@@ -76,7 +76,7 @@ def _running_on_loop() -> bool:
         return False
     return True
 
- 
+
 def ask_text(question: str) -> Optional[str]:
     """Ask the current slash-command user for free text via the same clarify prompt."""
     asker = _ASKER.get()
@@ -90,7 +90,6 @@ def ask_text(question: str) -> Optional[str]:
         return None
     answer = answer.strip()
     return answer or None
-
 
 
 def ask_choice(question: str, choices: list[Choice]) -> Optional[str]:
