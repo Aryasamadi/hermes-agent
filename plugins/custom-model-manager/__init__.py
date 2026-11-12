@@ -194,10 +194,10 @@ def _handle_add(raw_args: str, ctx=None) -> str:
     try:
         slug = _add_provider(name, base_url, api_key)
         return (
-            "✅ Provider ذخیره شد.\\n\\n"
-            f"نام: {name}\\n"
-            f"شناسه: custom:{slug}\\n"
-            f"Base URL: {base_url}\\n\\n"
+            "✅ Provider ذخیره شد.\n\n"
+            f"نام: {name}\n"
+            f"شناسه: custom:{slug}\n"
+            f"Base URL: {base_url}\n\n"
             "برای دیدن فهرست Providerها و مدل‌های قابل انتخاب، /model را اجرا کن."
         )
     except Exception as exc:
@@ -218,12 +218,16 @@ def _handle_list(raw_args: str = "") -> str:
         current_model = str(model_cfg.get("default", model_cfg.get("model", "not set")))
         lines = [f"Global default: {current_provider} / {current_model}", "", "Registered personal providers:"]
         for slug, item in models.items():
-            lines.extend([
+            entry_lines = [
                 f"• {item.get('name', slug)}",
                 f"  ID: {item.get('provider', 'custom:' + slug)}",
-                f"  Model: {item.get('model', 'unknown')}",
-                f"  Base URL: {item.get('base_url', '')}",
-            ])
+            ]
+            if item.get("model"):
+                entry_lines.append(f"  Model: {item['model']}")
+            else:
+                entry_lines.append("  Models: choose from /model")
+            entry_lines.append(f"  Base URL: {item.get('base_url', '')}")
+            lines.extend(entry_lines)
         return "\n".join(lines)
     except Exception as exc:
         return f"❌ Could not read provider registry: {exc}"
@@ -240,6 +244,9 @@ async def _handle_test(raw_args: str) -> str:
         item = data["models"].get(_slug(requested))
         if item is None:
             return f"❌ Provider '{requested}' is not registered. Use /mymodel for the exact ID."
+
+        if not str(item.get("model") or "").strip():
+            return "❌ برای این Provider هنوز شناسه مدل ذخیره نشده است؛ مدل را از فهرست /model انتخاب کن."
 
         base = item["base_url"].rstrip("/")
         if base.endswith("/chat/completions"):
@@ -283,6 +290,19 @@ def _active_default_matches(slug: str, item: dict, config: dict) -> bool:
         # In particular, a native provider such as NVIDIA is not the custom provider just
         # because an old base_url field is still present in config.yaml.
         return False
+
+    if not str(item.get("model") or "").strip():
+        providers = config.get("providers", {})
+        matching = [
+            str(key) for key, value in providers.items()
+            if isinstance(value, dict)
+            and str(value.get("api", value.get("base_url", value.get("url", "")))).strip().rstrip("/") == active_url
+        ] if isinstance(providers, dict) else []
+        if len(matching) > 1:
+            raise ValueError(
+                "Multiple providers share this URL; select another global default first so Hermes can identify the active route safely."
+            )
+        return bool(matching)
 
     # The base `custom` provider loses the named alias in some config versions. Only block
     # removal when the saved active model also belongs to this provider, not on URL alone.
@@ -379,7 +399,10 @@ def _handle_remove(raw_args: str) -> str:
 
 
 def register(ctx):
-    ctx.register_command("addmodel", _handle_add, description="Add an OpenAI-compatible provider/model", args_hint='<name> <url> <model> <api-key>')
+    def addmodel_handler(raw_args: str) -> str:
+        return _handle_add(raw_args, ctx=ctx)
+
+    ctx.register_command("addmodel", addmodel_handler, description="Add an OpenAI-compatible provider")
     ctx.register_command("mymodel", _handle_list, description="List personal providers and the current global default")
     ctx.register_command("testmodel", _handle_test, description="Test a registered personal model", args_hint="<provider>")
     ctx.register_command("removemodel", _handle_remove, description="Remove a registered personal provider/model", args_hint="<provider>")
