@@ -9,10 +9,9 @@ Each asker is that surface's existing clarify prompt, so no surface grows a new 
   its attached viewers (same module);
 * the in-process classic CLI and the legacy ``hermes serve`` backend: their own clarify picker.
 
-An asker takes ``(question, labels)`` and returns the label the user picked, or None; values are
-mapped back here, so a surface never sees them. With no asker bound (a hook, a cron job, a handler
-on an event loop, where blocking would stall the loop that must deliver the answer) the call
-returns None and the handler falls back to its own text usage.
+An asker takes ``(question, labels)`` and returns the label the user picked, or None. Passing
+``labels=None`` asks for free text through the same clarify UI. With no asker bound (a hook, a cron
+job, or a handler on an event loop) the call returns None.
 """
 from __future__ import annotations
 
@@ -24,7 +23,7 @@ from typing import Callable, Iterator, Optional
 
 logger = logging.getLogger(__name__)
 
-Asker = Callable[[str, list], Optional[str]]
+Asker = Callable[[str, Optional[list]], Optional[str]]
 Choice = str | dict
 
 _ASKER: ContextVar[Optional[Asker]] = ContextVar("plugin_choice_asker", default=None)
@@ -48,7 +47,7 @@ def asker_bound() -> bool:
 def clarify_asker(callback: Callable[[list], dict]) -> Asker:
     """An asker over a clarify-tool callback (``questions -> {answers: {qid: raw}, outcome}``): the
     classic CLI's clarify panel, the legacy backend's ``clarify`` server request."""
-    def ask(question: str, labels: list) -> Optional[str]:
+    def ask(question: str, labels: Optional[list]) -> Optional[str]:
         reply = callback([{"qid": "q0", "question": question, "choices": labels, "multi_select": False}])
         answer = ((reply or {}).get("answers") or {}).get("q0")
         return answer if isinstance(answer, str) else None
@@ -76,6 +75,22 @@ def _running_on_loop() -> bool:
     except RuntimeError:
         return False
     return True
+
+ 
+def ask_text(question: str) -> Optional[str]:
+    """Ask the current slash-command user for free text via the same clarify prompt."""
+    asker = _ASKER.get()
+    if asker is None:
+        return None
+    if _running_on_loop():
+        logger.warning("ask_text needs a sync slash-command handler: returning None")
+        return None
+    answer = asker(str(question), None)
+    if not isinstance(answer, str):
+        return None
+    answer = answer.strip()
+    return answer or None
+
 
 
 def ask_choice(question: str, choices: list[Choice]) -> Optional[str]:
