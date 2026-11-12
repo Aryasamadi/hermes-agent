@@ -157,51 +157,51 @@ def _add_provider(name: str, base_url: str, api_key: str) -> str:
 
 def _handle_add(raw_args: str, ctx=None) -> str:
     if raw_args.strip():
-        return "برای افزودن Provider فقط دستور /addmodel را بدون ورودی اجرا کن."
+        return "Run /addmodel without any arguments to add a provider."
 
     if ctx is None or not callable(getattr(ctx, "ask_text", None)):
-        return "❌ دریافت ورودی مرحله‌ای در این محیط در دسترس نیست."
+        return "❌ Interactive prompts are unavailable. Update Hermes to the latest main branch and restart the gateway, then try /addmodel again."
 
-    name = ctx.ask_text("نام Provider را وارد کن:")
+    name = ctx.ask_text("Enter the provider name:")
     if not name:
-        return "❌ نام Provider دریافت نشد؛ چیزی ذخیره نشد."
+        return "❌ No provider name was received. Nothing was saved."
 
-    base_url = ctx.ask_text("آدرس Base URL را وارد کن:")
+    base_url = ctx.ask_text("Enter the provider Base URL:")
     if not base_url:
-        return "❌ آدرس Base URL دریافت نشد؛ چیزی ذخیره نشد."
+        return "❌ No Base URL was received. Nothing was saved."
     parsed_url = urlparse(base_url.strip())
     if parsed_url.scheme not in {"http", "https"} or not parsed_url.netloc:
-        return "❌ آدرس باید یک URL معتبر با http:// یا https:// باشد."
+        return "❌ Enter a valid URL beginning with http:// or https://."
 
-    api_key = ctx.ask_text("API Token را وارد کن:")
+    api_key = ctx.ask_text("Enter the API token:")
     if not api_key:
-        return "❌ توکن دریافت نشد؛ چیزی ذخیره نشد."
+        return "❌ No API token was received. Nothing was saved."
 
     name = name.strip()
     base_url = base_url.strip().rstrip("/")
     api_key = api_key.strip()
     summary = (
-        "اطلاعات Provider جدید:\n"
-        f"نام: {name}\n"
+        "New provider details:\n"
+        f"Name: {name}\n"
         f"Base URL: {base_url}\n"
-        "Token: دریافت شد (مقدار آن نمایش داده نمی‌شود)\n\n"
-        "ذخیره شود؟"
+        "Token: received (value hidden)\n\n"
+        "Save this provider?"
     )
-    decision = ctx.ask_choice(summary, ["✅ تأیید و ذخیره", "❌ رد"])
-    if decision != "✅ تأیید و ذخیره":
-        return "درخواست رد شد؛ هیچ Provider جدیدی ذخیره نشد."
+    decision = ctx.ask_choice(summary, ["✅ Confirm and save", "❌ Reject"])
+    if decision != "✅ Confirm and save":
+        return "Request rejected. No provider was saved."
 
     try:
         slug = _add_provider(name, base_url, api_key)
         return (
-            "✅ Provider ذخیره شد.\n\n"
-            f"نام: {name}\n"
-            f"شناسه: custom:{slug}\n"
+            "✅ Provider saved.\n\n"
+            f"Name: {name}\n"
+            f"ID: custom:{slug}\n"
             f"Base URL: {base_url}\n\n"
-            "برای دیدن فهرست Providerها و مدل‌های قابل انتخاب، /model را اجرا کن."
+            "Run /model to view available providers and models."
         )
     except Exception as exc:
-        return f"❌ Provider ذخیره نشد: {exc}"
+        return f"❌ Provider was not saved: {exc}"
 
 
 def _handle_list(raw_args: str = "") -> str:
@@ -246,7 +246,7 @@ async def _handle_test(raw_args: str) -> str:
             return f"❌ Provider '{requested}' is not registered. Use /mymodel for the exact ID."
 
         if not str(item.get("model") or "").strip():
-            return "❌ برای این Provider هنوز شناسه مدل ذخیره نشده است؛ مدل را از فهرست /model انتخاب کن."
+            return "❌ No model is saved for this provider yet. Choose a model from /model."
 
         base = item["base_url"].rstrip("/")
         if base.endswith("/chat/completions"):
