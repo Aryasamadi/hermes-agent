@@ -492,10 +492,11 @@ class GatewayModelCommandsMixin:
             current_provider=ctx.current_provider, current_base_url=ctx.current_base_url,
             current_model=ctx.current_model, user_providers=ctx.user_provs,
             custom_providers=ctx.custom_provs, excluded_providers=ctx.excluded_provs,
-            # Chat `/model` is a read path: catalogs come from the disk cache and stale ones warm
-            # in the background, and only the selected custom endpoint is probed live, so one
-            # degraded provider can't stall the reply (#74003). Mirrors the GUI read path.
-            non_blocking_catalogs=True, probe_custom_providers=False, probe_current_custom_provider=True,
+            # `/model` is an explicit request to view available providers/models. Probe saved
+            # custom endpoints here (not during /addmodel registration) and cache the results.
+            # Keep the custom probe budget short so an unavailable endpoint cannot stall the picker.
+            non_blocking_catalogs=True, probe_custom_providers=True, probe_current_custom_provider=True,
+            fast_custom_probe=True,
         )
         adapter = self._delivery_adapter_for(ctx.source)
         if adapter is not None and getattr(type(adapter), "send_model_picker", None) is not None:
