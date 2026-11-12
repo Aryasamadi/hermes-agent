@@ -4,6 +4,7 @@ import json
 import os
 import shlex
 from pathlib import Path
+from urllib.parse import urlparse
 
 import httpx
 
@@ -74,7 +75,7 @@ def _write_env(name: str, value: str) -> None:
     os.environ[name] = value
 
 
-def _add_provider(name: str, base_url: str, model: str, api_key: str) -> str:
+def _add_provider(name: str, base_url: str, api_key: str) -> str:
     slug = _slug(name)
     if slug in {"anthropic", "openai", "nvidia", "google", "gemini", "deepseek", "openrouter", "nous", "custom"}:
         raise ValueError(f"'{slug}' is a reserved Hermes provider ID; choose a different provider name")
@@ -91,9 +92,8 @@ def _add_provider(name: str, base_url: str, model: str, api_key: str) -> str:
         "api": base_url.rstrip("/"),
         "key_env": env_name,
         "transport": "openai_chat",
-        "default_model": model,
         "discover_models": True,
-        "models": {model: {}},
+        "models": {},
     }
     previous_provider = providers.get(slug)
     previous_record = _load_registry()
@@ -109,7 +109,6 @@ def _add_provider(name: str, base_url: str, model: str, api_key: str) -> str:
             "name": name,
             "provider": f"custom:{slug}",
             "base_url": base_url.rstrip("/"),
-            "model": model,
             "key_env": env_name,
         }
         _save_registry(previous_record)
@@ -156,25 +155,53 @@ def _add_provider(name: str, base_url: str, model: str, api_key: str) -> str:
     return slug
 
 
-def _handle_add(raw_args: str) -> str:
+def _handle_add(raw_args: str, ctx=None) -> str:
+    if raw_args.strip():
+        return "برای افزودن Provider فقط دستور /addmodel را بدون ورودی اجرا کن."
+
+    if ctx is None or not callable(getattr(ctx, "ask_text", None)):
+        return "❌ دریافت ورودی مرحله‌ای در این محیط در دسترس نیست."
+
+    name = ctx.ask_text("نام Provider را وارد کن:")
+    if not name:
+        return "❌ نام Provider دریافت نشد؛ چیزی ذخیره نشد."
+
+    base_url = ctx.ask_text("آدرس Base URL را وارد کن:")
+    if not base_url:
+        return "❌ آدرس Base URL دریافت نشد؛ چیزی ذخیره نشد."
+    parsed_url = urlparse(base_url.strip())
+    if parsed_url.scheme not in {"http", "https"} or not parsed_url.netloc:
+        return "❌ آدرس باید یک URL معتبر با http:// یا https:// باشد."
+
+    api_key = ctx.ask_text("API Token را وارد کن:")
+    if not api_key:
+        return "❌ توکن دریافت نشد؛ چیزی ذخیره نشد."
+
+    name = name.strip()
+    base_url = base_url.strip().rstrip("/")
+    api_key = api_key.strip()
+    summary = (
+        "اطلاعات Provider جدید:\\n"
+        f"نام: {name}\\n"
+        f"Base URL: {base_url}\\n"
+        "Token: دریافت شد (مقدار آن نمایش داده نمی‌شود)\\n\\n"
+        "ذخیره شود؟"
+    )
+    decision = ctx.ask_choice(summary, ["✅ تأیید و ذخیره", "❌ رد"])
+    if decision != "✅ تأیید و ذخیره":
+        return "درخواست رد شد؛ هیچ Provider جدیدی ذخیره نشد."
+
     try:
-        args = shlex.split(raw_args)
-        if len(args) != 4:
-            return 'Usage: /addmodel "Provider Name" "https://example.com/v1" "model-name" "API_KEY"'
-        name, base_url, model, api_key = args
-        if not base_url.startswith(("http://", "https://")):
-            return "❌ API URL must begin with http:// or https://."
-        if not model.strip() or not api_key:
-            return "❌ Model name and API key cannot be empty."
-        slug = _add_provider(name.strip(), base_url, model.strip(), api_key)
+        slug = _add_provider(name, base_url, api_key)
         return (
-            "✅ Provider saved.\n\n"
-            f"Provider: {name}\nModel: {model}\nID: custom:{slug}\n\n"
-            f"Test it with: /testmodel {slug}\n"
-            f"To make it the global default: /model custom:{slug}:{model} --global"
+            "✅ Provider ذخیره شد.\\n\\n"
+            f"نام: {name}\\n"
+            f"شناسه: custom:{slug}\\n"
+            f"Base URL: {base_url}\\n\\n"
+            "برای دیدن فهرست Providerها و مدل‌های قابل انتخاب، /model را اجرا کن."
         )
     except Exception as exc:
-        return f"❌ Provider was not added: {exc}"
+        return f"❌ Provider ذخیره نشد: {exc}"
 
 
 def _handle_list(raw_args: str = "") -> str:
