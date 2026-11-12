@@ -181,10 +181,10 @@ def _handle_add(raw_args: str, ctx=None) -> str:
     base_url = base_url.strip().rstrip("/")
     api_key = api_key.strip()
     summary = (
-        "اطلاعات Provider جدید:\\n"
-        f"نام: {name}\\n"
-        f"Base URL: {base_url}\\n"
-        "Token: دریافت شد (مقدار آن نمایش داده نمی‌شود)\\n\\n"
+        "اطلاعات Provider جدید:\n"
+        f"نام: {name}\n"
+        f"Base URL: {base_url}\n"
+        "Token: دریافت شد (مقدار آن نمایش داده نمی‌شود)\n\n"
         "ذخیره شود؟"
     )
     decision = ctx.ask_choice(summary, ["✅ تأیید و ذخیره", "❌ رد"])
