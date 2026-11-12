@@ -1805,6 +1805,8 @@ def _handle_todo(raw_args: str) -> str:
 
 A sync slash-command handler can ask the user who ran it to pick one option with `ctx.ask_choice(question, choices)`. It blocks until the user answers and returns the picked choice's `value`, or `None`. Each surface shows it the way it shows the agent's `clarify` questions:
 
+A sync slash-command handler can also collect a free-text answer with `ctx.ask_text(question)`. It uses the same clarify UI without predefined choices and returns the user's text, or `None` when no answer is available.
+
 | Surface | What the user sees |
 |---|---|
 | Telegram, Discord, Slack | A card with one button per choice (plus "Other") |

@@ -624,10 +624,14 @@ class PluginContext:
         return await apost(self, text)
 
     def ask_choice(self, question: str, choices: list) -> Optional[str]:
-        """From a sync slash-command handler: ask its user to pick one of *choices* (``str`` or
-        ``{value, label?, description?}``); the value, or None if unanswerable: ``plugin_choices.py``."""
+        """From a sync slash-command handler: ask its user to pick one of *choices*."""
         from hermes_cli.plugin_choices import ask_choice
         return ask_choice(question, choices)
+
+    def ask_text(self, question: str) -> Optional[str]:
+        """Ask the current slash-command user for a free-text reply via the clarify UI."""
+        from hermes_cli.plugin_choices import ask_text
+        return ask_text(question)
 
     def _gateway_injection_allowed(self) -> bool:
         """Return whether this plugin may trigger gateway session turns (read from the plugin's

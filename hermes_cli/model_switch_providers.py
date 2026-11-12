@@ -1372,7 +1372,7 @@ def list_picker_providers(
     custom_providers: list | None = None, max_models: int | None = None, current_model: str = "",
     include_moa: bool = False, excluded_providers: list | None = None,
     non_blocking_catalogs: bool = False, probe_custom_providers: bool = True,
-    probe_current_custom_provider: bool = False) -> list[dict]:
+    probe_current_custom_provider: bool = False, fast_custom_probe: bool | None = None) -> list[dict]:
     """Interactive-picker variant of :func:`list_authenticated_providers`.
 
     OpenRouter's list is replaced with :func:`hermes_cli.models.fetch_openrouter_models` (curated
@@ -1387,7 +1387,7 @@ def list_picker_providers(
         user_providers=user_providers, custom_providers=custom_providers, max_models=max_models,
         current_model=current_model, for_picker=True, excluded_providers=excluded_providers,
         non_blocking_catalogs=non_blocking_catalogs, probe_custom_providers=probe_custom_providers,
-        probe_current_custom_provider=probe_current_custom_provider)
+        probe_current_custom_provider=probe_current_custom_provider, fast_custom_probe=fast_custom_probe)
     if include_moa:
         providers = _prepend_moa_picker_provider(providers, current_provider=current_provider)
 

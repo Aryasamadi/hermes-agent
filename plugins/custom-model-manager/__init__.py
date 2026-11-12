@@ -4,6 +4,7 @@ import json
 import os
 import shlex
 from pathlib import Path
+from urllib.parse import urlparse
 
 import httpx
 
@@ -74,7 +75,7 @@ def _write_env(name: str, value: str) -> None:
     os.environ[name] = value
 
 
-def _add_provider(name: str, base_url: str, model: str, api_key: str) -> str:
+def _add_provider(name: str, base_url: str, api_key: str) -> str:
     slug = _slug(name)
     if slug in {"anthropic", "openai", "nvidia", "google", "gemini", "deepseek", "openrouter", "nous", "custom"}:
         raise ValueError(f"'{slug}' is a reserved Hermes provider ID; choose a different provider name")
@@ -91,9 +92,8 @@ def _add_provider(name: str, base_url: str, model: str, api_key: str) -> str:
         "api": base_url.rstrip("/"),
         "key_env": env_name,
         "transport": "openai_chat",
-        "default_model": model,
         "discover_models": True,
-        "models": {model: {}},
+        "models": {},
     }
     previous_provider = providers.get(slug)
     previous_record = _load_registry()
@@ -109,7 +109,6 @@ def _add_provider(name: str, base_url: str, model: str, api_key: str) -> str:
             "name": name,
             "provider": f"custom:{slug}",
             "base_url": base_url.rstrip("/"),
-            "model": model,
             "key_env": env_name,
         }
         _save_registry(previous_record)
@@ -156,25 +155,53 @@ def _add_provider(name: str, base_url: str, model: str, api_key: str) -> str:
     return slug
 
 
-def _handle_add(raw_args: str) -> str:
+def _handle_add(raw_args: str, ctx=None) -> str:
+    if raw_args.strip():
+        return "برای افزودن Provider فقط دستور /addmodel را بدون ورودی اجرا کن."
+
+    if ctx is None or not callable(getattr(ctx, "ask_text", None)):
+        return "❌ دریافت ورودی مرحله‌ای در این محیط در دسترس نیست."
+
+    name = ctx.ask_text("نام Provider را وارد کن:")
+    if not name:
+        return "❌ نام Provider دریافت نشد؛ چیزی ذخیره نشد."
+
+    base_url = ctx.ask_text("آدرس Base URL را وارد کن:")
+    if not base_url:
+        return "❌ آدرس Base URL دریافت نشد؛ چیزی ذخیره نشد."
+    parsed_url = urlparse(base_url.strip())
+    if parsed_url.scheme not in {"http", "https"} or not parsed_url.netloc:
+        return "❌ آدرس باید یک URL معتبر با http:// یا https:// باشد."
+
+    api_key = ctx.ask_text("API Token را وارد کن:")
+    if not api_key:
+        return "❌ توکن دریافت نشد؛ چیزی ذخیره نشد."
+
+    name = name.strip()
+    base_url = base_url.strip().rstrip("/")
+    api_key = api_key.strip()
+    summary = (
+        "اطلاعات Provider جدید:\n"
+        f"نام: {name}\n"
+        f"Base URL: {base_url}\n"
+        "Token: دریافت شد (مقدار آن نمایش داده نمی‌شود)\n\n"
+        "ذخیره شود؟"
+    )
+    decision = ctx.ask_choice(summary, ["✅ تأیید و ذخیره", "❌ رد"])
+    if decision != "✅ تأیید و ذخیره":
+        return "درخواست رد شد؛ هیچ Provider جدیدی ذخیره نشد."
+
     try:
-        args = shlex.split(raw_args)
-        if len(args) != 4:
-            return 'Usage: /addmodel "Provider Name" "https://example.com/v1" "model-name" "API_KEY"'
-        name, base_url, model, api_key = args
-        if not base_url.startswith(("http://", "https://")):
-            return "❌ API URL must begin with http:// or https://."
-        if not model.strip() or not api_key:
-            return "❌ Model name and API key cannot be empty."
-        slug = _add_provider(name.strip(), base_url, model.strip(), api_key)
+        slug = _add_provider(name, base_url, api_key)
         return (
-            "✅ Provider saved.\n\n"
-            f"Provider: {name}\nModel: {model}\nID: custom:{slug}\n\n"
-            f"Test it with: /testmodel {slug}\n"
-            f"To make it the global default: /model custom:{slug}:{model} --global"
+            "✅ Provider ذخیره شد.\n\n"
+            f"نام: {name}\n"
+            f"شناسه: custom:{slug}\n"
+            f"Base URL: {base_url}\n\n"
+            "برای دیدن فهرست Providerها و مدل‌های قابل انتخاب، /model را اجرا کن."
         )
     except Exception as exc:
-        return f"❌ Provider was not added: {exc}"
+        return f"❌ Provider ذخیره نشد: {exc}"
 
 
 def _handle_list(raw_args: str = "") -> str:
@@ -191,12 +218,16 @@ def _handle_list(raw_args: str = "") -> str:
         current_model = str(model_cfg.get("default", model_cfg.get("model", "not set")))
         lines = [f"Global default: {current_provider} / {current_model}", "", "Registered personal providers:"]
         for slug, item in models.items():
-            lines.extend([
+            entry_lines = [
                 f"• {item.get('name', slug)}",
                 f"  ID: {item.get('provider', 'custom:' + slug)}",
-                f"  Model: {item.get('model', 'unknown')}",
-                f"  Base URL: {item.get('base_url', '')}",
-            ])
+            ]
+            if item.get("model"):
+                entry_lines.append(f"  Model: {item['model']}")
+            else:
+                entry_lines.append("  Models: choose from /model")
+            entry_lines.append(f"  Base URL: {item.get('base_url', '')}")
+            lines.extend(entry_lines)
         return "\n".join(lines)
     except Exception as exc:
         return f"❌ Could not read provider registry: {exc}"
@@ -213,6 +244,9 @@ async def _handle_test(raw_args: str) -> str:
         item = data["models"].get(_slug(requested))
         if item is None:
             return f"❌ Provider '{requested}' is not registered. Use /mymodel for the exact ID."
+
+        if not str(item.get("model") or "").strip():
+            return "❌ برای این Provider هنوز شناسه مدل ذخیره نشده است؛ مدل را از فهرست /model انتخاب کن."
 
         base = item["base_url"].rstrip("/")
         if base.endswith("/chat/completions"):
@@ -256,6 +290,19 @@ def _active_default_matches(slug: str, item: dict, config: dict) -> bool:
         # In particular, a native provider such as NVIDIA is not the custom provider just
         # because an old base_url field is still present in config.yaml.
         return False
+
+    if not str(item.get("model") or "").strip():
+        providers = config.get("providers", {})
+        matching = [
+            str(key) for key, value in providers.items()
+            if isinstance(value, dict)
+            and str(value.get("api", value.get("base_url", value.get("url", "")))).strip().rstrip("/") == active_url
+        ] if isinstance(providers, dict) else []
+        if len(matching) > 1:
+            raise ValueError(
+                "Multiple providers share this URL; select another global default first so Hermes can identify the active route safely."
+            )
+        return bool(matching)
 
     # The base `custom` provider loses the named alias in some config versions. Only block
     # removal when the saved active model also belongs to this provider, not on URL alone.
@@ -352,7 +399,10 @@ def _handle_remove(raw_args: str) -> str:
 
 
 def register(ctx):
-    ctx.register_command("addmodel", _handle_add, description="Add an OpenAI-compatible provider/model", args_hint='<name> <url> <model> <api-key>')
+    def addmodel_handler(raw_args: str) -> str:
+        return _handle_add(raw_args, ctx=ctx)
+
+    ctx.register_command("addmodel", addmodel_handler, description="Add an OpenAI-compatible provider")
     ctx.register_command("mymodel", _handle_list, description="List personal providers and the current global default")
     ctx.register_command("testmodel", _handle_test, description="Test a registered personal model", args_hint="<provider>")
     ctx.register_command("removemodel", _handle_remove, description="Remove a registered personal provider/model", args_hint="<provider>")
