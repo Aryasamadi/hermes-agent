@@ -669,7 +669,10 @@ _REASONING_CARRIER_ROUTES: tuple = (
     # Vendors that document reasoning_details replay next to reasoning_content.
     (frozenset({RC, RD}), frozenset({"novita", "tencent-tokenhub", "minimax", "minimax-cn"}),
      ("novita.ai", "tokenhub.tencentmaas.com", "tokenhub-intl.tencentcloudmaas.com", "minimax.io", "minimaxi.com")),
-    (_LOCAL_CARRIERS, frozenset({"ollama-cloud", "custom", "lmstudio", "upstage"}), ("ollama.com", "upstage.ai")),
+    # "custom" is not a capability signal: named custom providers often point to remote
+    # aggregators or NVIDIA NIM. They get the standard reasoning_content carrier; local
+    # endpoints are detected by is_local_endpoint() and retain the local alias pair.
+    (_LOCAL_CARRIERS, frozenset({"ollama-cloud", "lmstudio", "upstage"}), ("ollama.com", "upstage.ai")),
 )
 
 
@@ -911,7 +914,7 @@ def reapply_reasoning_echo(api_messages: list, needs_thinking_pad: bool, carrier
 _UNKNOWN_FIELD_PHRASES = (
     "extra inputs are not permitted", "is unsupported", "no such field", "unknown field",
     "unrecognized request argument", "unrecognized field", "unknown parameter", "unexpected field",
-    "additional propert", "unknown key",
+    "additional propert", "unknown key", "duplicate field",
 )
 _NAMED_FIELD_RES = {
     RC: re.compile(r"(?<![\w])reasoning_content(?![\w])"),
@@ -939,7 +942,16 @@ def rejected_reasoning_fields(error_body: Any, sent_messages: Any) -> frozenset:
     named = {key for key in sent if _NAMED_FIELD_RES[key].search(body)}
     if not named:
         return frozenset()
-    return frozenset(sent & (_ALL_CARRIERS if RC in named else {R, RD}))
+
+    if "duplicate field" in body:
+        # A serde alias collision is the inverse of an unknown-field rejection:
+        # reasoning_content is the canonical field the server understands, while
+        # reasoning / reasoning_details are aliases that collide with it. Preserve
+        # RC even on non-must-echo routes and drop only the alias carrier(s).
+        aliases = {R, RD} if RC in named else named & {R, RD}
+        return frozenset(sent & aliases)
+
+    return frozenset(sent & (_ALL_CARRIERS if RC in named else {R, RD})
 
 
 def reasoning_route_key(agent: Any) -> tuple[str, str, str]:
