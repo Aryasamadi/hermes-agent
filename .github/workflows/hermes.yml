@@ -2,9 +2,6 @@ name: Hermes Agent
 
 on:
   workflow_dispatch:
-  push:
-    branches:
-      - main
 
 permissions:
   contents: write
@@ -47,22 +44,22 @@ jobs:
           hermes --version
           echo "Hermes ${GITHUB_REPOSITORY} main installation completed."
 
-      - name: Restore model settings only (discard persisted databases)
+      - name: Restore encrypted persistent state
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          mkdir -p "$HERMES_HOME" /tmp/hermes-restore
+          mkdir -p "$HERMES_HOME" /tmp/hermes-restore /tmp/hermes-extract
           if [ -z "${HERMES_BACKUP_KEY:-}" ]; then
             echo 'ERROR: HERMES_BACKUP_KEY secret is missing.'
             exit 1
           fi
 
           if gh release view hermes-state --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            asset="$(gh release view hermes-state --repo "$GITHUB_REPOSITORY" --json assets --jq '[.assets[] | select(.name | startswith("hermes-state-") and endswith(".enc"))] | sort_by(.updatedAt) | last | .name // empty')"
+            asset="$(gh release view hermes-state --repo "$GITHUB_REPOSITORY" --json assets --jq '[.assets[] | select(.name | startswith("hermes-state-") and endswith(".enc"))] | sort_by(.createdAt) | last | .name // empty')"
             if [ -z "$asset" ]; then
-              echo 'ERROR: hermes-state release exists but has no encrypted backup; refusing to lose model settings.'
+              echo 'ERROR: hermes-state release exists but has no encrypted backup; refusing to start without the saved model settings.'
               exit 1
             fi
 
@@ -71,53 +68,54 @@ jobs:
               -in "/tmp/hermes-restore/$asset" \
               -out /tmp/hermes-state.tar.gz \
               -pass env:HERMES_BACKUP_KEY
-            mkdir -p /tmp/hermes-extract
-            tar -xzf /tmp/hermes-state.tar.gz -C /tmp/hermes-extract
 
             /usr/bin/python3 - <<'PY'
-          import shutil
-          from pathlib import Path
+          import tarfile
+          from pathlib import Path, PurePosixPath
 
-          home = Path(__import__("os").environ["HERMES_HOME"])
-          extracted = Path("/tmp/hermes-extract")
-          roots = [extracted / "hermes", extracted / "data"]
-          source = next((p for p in roots if p.is_dir()), None)
-          if source is None:
-              raise SystemExit("ERROR: Backup archive layout is not recognized; model settings were not restored.")
-
-          allowed = (
-              Path("config.yaml"),
-              Path(".env"),
-              Path("plugin-data/custom-model-manager/models.json"),
-          )
-          copied = []
-          def copy_allowed(src_root: Path, dst_root: Path):
-              for relative in allowed:
-                  src = src_root / relative
-                  if src.is_file():
-                      dst = dst_root / relative
-                      dst.parent.mkdir(parents=True, exist_ok=True)
-                      shutil.copy2(src, dst)
-                      if dst.name == ".env":
-                          dst.chmod(0o600)
-                      copied.append(str(dst.relative_to(home)))
-
-          copy_allowed(source, home)
-          profiles = source / "profiles"
-          if profiles.is_dir():
-              for profile in sorted(p for p in profiles.iterdir() if p.is_dir()):
-                  copy_allowed(profile, home / "profiles" / profile.name)
-
-          if not (home / "config.yaml").is_file():
-              raise SystemExit("ERROR: config.yaml was not present in the backup; refusing to start without model configuration.")
-
-          print("Restored model configuration files:")
-          for path in copied:
-              print(f"  {path}")
-          print("No session/database files were restored.")
+          archive = Path("/tmp/hermes-state.tar.gz")
+          with tarfile.open(archive, "r:gz") as bundle:
+              for member in bundle.getmembers():
+                  path = PurePosixPath(member.name)
+                  if path.is_absolute() or ".." in path.parts:
+                      raise SystemExit(f"ERROR: Unsafe path in backup archive: {member.name}")
+                  if not path.parts or path.parts[0] not in {"hermes", "manifest.json"}:
+                      raise SystemExit(f"ERROR: Unexpected top-level backup entry: {member.name}")
+          print("Backup archive paths validated.")
           PY
+
+            tar -xzf /tmp/hermes-state.tar.gz --no-same-owner --no-same-permissions -C /tmp/hermes-extract
+            root=''
+            for candidate in /tmp/hermes-extract/hermes /tmp/hermes-extract/data; do
+              if [ -d "$candidate" ]; then root="$candidate"; break; fi
+            done
+            if [ -z "$root" ]; then
+              echo 'ERROR: Backup archive layout is not recognized; no state was restored.'
+              exit 1
+            fi
+
+            # Restore durable user state, including clean-generation SQLite snapshots.
+            # Never restore source checkouts, managed Python environments, caches, logs,
+            # or live SQLite WAL/SHM/journal sidecars.
+            rsync -a \
+              --exclude='hermes-agent/' \
+              --exclude='installs/' \
+              --exclude='cache/' \
+              --exclude='logs/' \
+              --exclude='scratch/' \
+              --exclude='*.db-wal' \
+              --exclude='*.db-shm' \
+              --exclude='*.db-journal' \
+              --exclude='*.sqlite-wal' \
+              --exclude='*.sqlite-shm' \
+              --exclude='*.sqlite-journal' \
+              --exclude='*.sqlite3-wal' \
+              --exclude='*.sqlite3-shm' \
+              --exclude='*.sqlite3-journal' \
+              "$root/" "$HERMES_HOME/"
+
             rm -rf /tmp/hermes-restore /tmp/hermes-extract /tmp/hermes-state.tar.gz
-            echo "Model settings restored from $asset; all database files in the archive were discarded."
+            echo "Persistent Hermes state restored from $asset."
           else
             echo 'No existing backup release; preparing a first run.'
           fi
@@ -218,35 +216,42 @@ jobs:
           hermes --help >/dev/null
           echo 'Runtime verification passed.'
 
-      - name: Remove all persisted databases (keep models only)
+      - name: Validate restored SQLite state
         shell: bash
         run: |
           set -euo pipefail
           /usr/bin/python3 - <<'PY'
           import os
+          import sqlite3
           from pathlib import Path
 
           home = Path(os.environ["HERMES_HOME"])
-          preserved_runtime = {home / "hermes-agent", home / "installs"}
-          suffixes = (
-              ".db", ".db-wal", ".db-shm", ".db-journal",
-              ".sqlite", ".sqlite3", ".sqlite-wal", ".sqlite-shm", ".sqlite-journal",
-          )
-          removed = 0
-          removed_bytes = 0
-          for path in home.rglob("*"):
+          excluded = {"hermes-agent", "installs", "cache", "logs", "scratch"}
+          suffixes = (".db", ".sqlite", ".sqlite3")
+          databases = []
+          for path in sorted(home.rglob("*")):
               if not path.is_file() or path.is_symlink():
                   continue
-              if any(root == path or root in path.parents for root in preserved_runtime):
+              relative = path.relative_to(home)
+              if any(part in excluded for part in relative.parts):
                   continue
-              if path.name.lower().endswith(suffixes):
-                  try:
-                      removed_bytes += path.stat().st_size
-                      path.unlink()
-                      removed += 1
-                  except FileNotFoundError:
-                      pass
-          print(f"Removed {removed} database files ({removed_bytes / (1024 * 1024):.1f} MiB).")
+              if not path.name.lower().endswith(suffixes):
+                  continue
+              try:
+                  uri = path.resolve().as_uri() + "?mode=ro"
+                  with sqlite3.connect(uri, uri=True, timeout=30) as db:
+                      result = db.execute("PRAGMA quick_check").fetchone()
+                  if not result or result[0] != "ok":
+                      raise RuntimeError(str(result[0] if result else "no result"))
+              except Exception as exc:
+                  raise SystemExit(f"ERROR: Restored SQLite database failed quick_check: {relative}: {exc}")
+              databases.append(relative)
+              print(f"SQLite state OK: {relative}")
+
+          if not databases:
+              print("No previous SQLite state found; first-run database creation is expected.")
+          else:
+              print(f"Validated {len(databases)} restored SQLite database(s); none were deleted.")
           PY
 
       - name: Start Hermes and maintain encrypted backups
@@ -270,51 +275,100 @@ jobs:
 
           backup() {
             local work='/tmp/hermes-backup'
+            local lock_file='/tmp/hermes-backup.lock'
+            exec 9>"$lock_file"
+            if ! flock -w 180 9; then
+              echo 'ERROR: Timed out waiting for the previous Hermes backup to finish.'
+              return 1
+            fi
+
             rm -rf "$work"
             mkdir -p "$work/hermes"
 
-            # Persist only model/provider settings and credentials. No sessions, history,
-            # cache, logs, SQLite databases, or other runtime state are backed up.
+            # Copy durable files while excluding generated runtime components and all
+            # SQLite originals/sidecars. Databases are snapshotted separately below.
+            rsync -a \
+              --exclude='hermes-agent/' \
+              --exclude='installs/' \
+              --exclude='cache/' \
+              --exclude='logs/' \
+              --exclude='scratch/' \
+              --exclude='*.db' \
+              --exclude='*.sqlite' \
+              --exclude='*.sqlite3' \
+              --exclude='*.db-wal' \
+              --exclude='*.db-shm' \
+              --exclude='*.db-journal' \
+              --exclude='*.sqlite-wal' \
+              --exclude='*.sqlite-shm' \
+              --exclude='*.sqlite-journal' \
+              --exclude='*.sqlite3-wal' \
+              --exclude='*.sqlite3-shm' \
+              --exclude='*.sqlite3-journal' \
+              "$HERMES_HOME/" "$work/hermes/"
+
+            # Use SQLite's online backup API: it includes committed WAL content and
+            # produces a standalone database file without copying live -wal/-shm files.
             /usr/bin/python3 - <<'PY'
+          import json
           import os
-          import shutil
+          import sqlite3
+          from datetime import datetime, timezone
           from pathlib import Path
 
           home = Path(os.environ["HERMES_HOME"])
           output = Path("/tmp/hermes-backup/hermes")
-          allowed = (
-              Path("config.yaml"),
-              Path(".env"),
-              Path("plugin-data/custom-model-manager/models.json"),
-          )
-          copied = []
+          excluded = {"hermes-agent", "installs", "cache", "logs", "scratch"}
+          suffixes = (".db", ".sqlite", ".sqlite3")
+          database_files = []
+          total_bytes = 0
 
-          def copy_allowed(src_root: Path, dst_root: Path):
-              for relative in allowed:
-                  src = src_root / relative
-                  if src.is_file():
-                      dst = dst_root / relative
-                      dst.parent.mkdir(parents=True, exist_ok=True)
-                      shutil.copy2(src, dst)
-                      if dst.name == ".env":
-                          dst.chmod(0o600)
-                      copied.append(str(dst.relative_to(output)))
+          for source in sorted(home.rglob("*")):
+              if not source.is_file() or source.is_symlink():
+                  continue
+              relative = source.relative_to(home)
+              if any(part in excluded for part in relative.parts):
+                  continue
+              if not source.name.lower().endswith(suffixes):
+                  continue
 
-          copy_allowed(home, output)
-          profiles = home / "profiles"
-          if profiles.is_dir():
-              for profile in sorted(p for p in profiles.iterdir() if p.is_dir()):
-                  copy_allowed(profile, output / "profiles" / profile.name)
+              target = output / relative
+              target.parent.mkdir(parents=True, exist_ok=True)
+              try:
+                  source_uri = source.resolve().as_uri() + "?mode=ro"
+                  with sqlite3.connect(source_uri, uri=True, timeout=60) as src:
+                      with sqlite3.connect(target, timeout=60) as dst:
+                          src.backup(dst, pages=512, sleep=0.05)
+                          result = dst.execute("PRAGMA quick_check").fetchone()
+                          if not result or result[0] != "ok":
+                              raise RuntimeError(str(result[0] if result else "no result"))
+                  target.chmod(0o600)
+              except Exception as exc:
+                  target.unlink(missing_ok=True)
+                  raise SystemExit(f"ERROR: Could not create a consistent SQLite snapshot for {relative}: {exc}")
+
+              size = target.stat().st_size
+              total_bytes += size
+              database_files.append({"path": str(relative), "bytes": size})
+              print(f"SQLite snapshot verified: {relative} ({size / (1024 * 1024):.1f} MiB)")
 
           if not (output / "config.yaml").is_file():
-              raise SystemExit("ERROR: refusing to create a model-only backup without config.yaml.")
-          print("Model-only backup contents:")
-          for path in copied:
-              print(f"  {path}")
-          print(f"Saved {len(copied)} configuration/credential files; no databases included.")
+              raise SystemExit("ERROR: refusing to create a backup without Hermes config.yaml.")
+
+          manifest = {
+              "format_version": 1,
+              "created_at_utc": datetime.now(timezone.utc).isoformat(),
+              "database_files": database_files,
+              "database_bytes": total_bytes,
+          }
+          Path("/tmp/hermes-backup/manifest.json").write_text(
+              json.dumps(manifest, indent=2) + "\n", encoding="utf-8"
+          )
+          print(f"Snapshot set ready: {len(database_files)} SQLite DB(s), {total_bytes / (1024 * 1024):.1f} MiB.")
           PY
 
-            tar -czf "$work/hermes-state.tar.gz" -C "$work" hermes
+            # Low compression level favors predictable backup speed over CPU-heavy compression.
+            tar -cf - -C "$work" hermes manifest.json | gzip -1 > "$work/hermes-state.tar.gz"
             openssl enc -aes-256-cbc -pbkdf2 -salt \
               -in "$work/hermes-state.tar.gz" \
               -out "$work/hermes-state.enc" \
@@ -322,40 +376,84 @@ jobs:
 
             if ! gh release view hermes-state --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
               gh release create hermes-state --repo "$GITHUB_REPOSITORY" \
-                --title 'Hermes Model Configuration Backup' \
-                --notes 'Encrypted backup of model/provider configuration and credentials only. No databases or session history.' \
+                --title 'Hermes Persistent State (Encrypted)' \
+                --notes 'Encrypted snapshots of durable Hermes state, including SQLite online-backup snapshots and model/provider settings. Source checkouts, Python environments, caches, logs and live SQLite sidecars are excluded. Latest two snapshots are retained.' \
                 --latest=false
             fi
 
             local name="hermes-state-$(date -u +%Y%m%d-%H%M%S).enc"
             mv "$work/hermes-state.enc" "$work/$name"
 
-            # Upload the new small backup FIRST. Only after it succeeds, delete all older
-            # encrypted backups, which contain the large databases the operator asked to discard.
+            # Upload first so a failed upload never destroys the last known-good backup.
             gh release upload hermes-state "$work/$name" --repo "$GITHUB_REPOSITORY"
 
+            # Retain two complete generations; the previous model-only asset naturally
+            # ages out after two successful fresh-state snapshots.
             local old_assets failed=0
-            old_assets="$(gh release view hermes-state --repo "$GITHUB_REPOSITORY" --json assets --jq ".assets[] | select((.name | startswith(\"hermes-state-\") and endswith(\".enc\")) and .name != \"$name\") | .name")"
-            local -a pending=()
+            old_assets="$(gh release view hermes-state --repo "$GITHUB_REPOSITORY" --json assets --jq '[.assets[] | select(.name | startswith("hermes-state-") and endswith(".enc"))] | sort_by(.createdAt) | reverse | .[2:] | .[].name')"
             while IFS= read -r old; do
               [ -n "$old" ] || continue
-              gh release delete-asset hermes-state "$old" --repo "$GITHUB_REPOSITORY" --yes &
-              pending+=("$!")
-              if [ "${#pending[@]}" -ge 12 ]; then
-                for pid in "${pending[@]}"; do wait "$pid" || failed=1; done
-                pending=()
-              fi
+              gh release delete-asset hermes-state "$old" --repo "$GITHUB_REPOSITORY" --yes || failed=1
             done <<< "$old_assets"
-            for pid in "${pending[@]}"; do wait "$pid" || failed=1; done
             if [ "$failed" -ne 0 ]; then
-              echo 'ERROR: At least one old database-containing backup could not be deleted.'
+              echo 'ERROR: At least one expired Hermes backup could not be removed.'
               return 1
             fi
 
-            echo "Model-only encrypted backup uploaded: $name"
+            echo "Encrypted persistent-state backup uploaded: $name"
             rm -rf "$work"
           }
 
+          # Start with the clean model-only baseline, then snapshot the new live state.
+          backup
+          (
+            sleep 60
+            while true; do
+              backup || echo 'WARNING: Backup failed; it will retry in 5 minutes.'
+              sleep 300
+            done
+          ) &
+          BACKUP_PID=$!
+
+          # End the gateway proactively before GitHub's 350-minute hard job timeout,
+          # leaving time for graceful shutdown and the final encrypted snapshot.
+          (
+            sleep 320m
+            kill -TERM "$$" 2>/dev/null || true
+          ) &
+          DEADLINE_PID=$!
+
+          hermes gateway run &
+          GATEWAY_PID=$!
+
+          cleanup() {
+            local status=$?
+            trap - EXIT INT TERM
+            kill "$DEADLINE_PID" 2>/dev/null || true
+            kill "$BACKUP_PID" 2>/dev/null || true
+            wait "$BACKUP_PID" 2>/dev/null || true
+
+            # Stop the gateway before taking the final SQLite snapshots.
+            kill -TERM "$GATEWAY_PID" 2>/dev/null || true
+            for _ in $(seq 1 90); do
+              kill -0 "$GATEWAY_PID" 2>/dev/null || break
+              sleep 1
+            done
+            kill -KILL "$GATEWAY_PID" 2>/dev/null || true
+            wait "$GATEWAY_PID" 2>/dev/null || true
+
+            backup || echo 'WARNING: Final encrypted persistent-state backup failed.'
+            exit "$status"
+          }
+          trap cleanup EXIT
+          trap 'exit 130' INT
+          trap 'exit 143' TERM
+
+          set +e
+          wait "$GATEWAY_PID"
+          gateway_status=$?
+          set -e
+          exit "$gateway_status"
           # Create the compact backup immediately before the gateway starts.
           backup
           (
