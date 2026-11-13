@@ -5,8 +5,6 @@ on:
   push:
     branches:
       - main
-    paths:
-      - .github/workflows/hermes.yml
 
 permissions:
   contents: write
@@ -336,13 +334,23 @@ jobs:
             # encrypted backups, which contain the large databases the operator asked to discard.
             gh release upload hermes-state "$work/$name" --repo "$GITHUB_REPOSITORY"
 
-            local old_assets
+            local old_assets failed=0
             old_assets="$(gh release view hermes-state --repo "$GITHUB_REPOSITORY" --json assets --jq ".assets[] | select((.name | startswith(\"hermes-state-\") and endswith(\".enc\")) and .name != \"$name\") | .name")"
+            local -a pending=()
             while IFS= read -r old; do
               [ -n "$old" ] || continue
-              gh release delete-asset hermes-state "$old" --repo "$GITHUB_REPOSITORY" --yes \
-                || { echo "ERROR: Could not delete old database-containing backup $old"; return 1; }
+              gh release delete-asset hermes-state "$old" --repo "$GITHUB_REPOSITORY" --yes &
+              pending+=("$!")
+              if [ "${#pending[@]}" -ge 12 ]; then
+                for pid in "${pending[@]}"; do wait "$pid" || failed=1; done
+                pending=()
+              fi
             done <<< "$old_assets"
+            for pid in "${pending[@]}"; do wait "$pid" || failed=1; done
+            if [ "$failed" -ne 0 ]; then
+              echo 'ERROR: At least one old database-containing backup could not be deleted.'
+              return 1
+            fi
 
             echo "Model-only encrypted backup uploaded: $name"
             rm -rf "$work"
