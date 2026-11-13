@@ -13,7 +13,7 @@ permissions:
 
 concurrency:
   group: hermes-agent-gateway
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 jobs:
   hermes:
@@ -27,9 +27,6 @@ jobs:
       HERMES_BACKUP_KEY: ${{ secrets.HERMES_BACKUP_KEY }}
 
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
       - name: Install supported Hermes runtime
         shell: bash
         run: |
@@ -43,6 +40,13 @@ jobs:
           export PATH="$HOME/.local/bin:$PATH"
           command -v hermes
           hermes --help >/dev/null
+          installed_sha="$(git -C "$HERMES_HOME/hermes-agent" rev-parse HEAD)"
+          if [ "$installed_sha" != "$GITHUB_SHA" ]; then
+            echo "ERROR: installed source SHA $installed_sha does not match workflow SHA $GITHUB_SHA"
+            exit 1
+          fi
+          echo "Installed Hermes source commit: $installed_sha"
+          hermes --version
           echo "Hermes ${GITHUB_REPOSITORY} main installation completed."
 
       - name: Restore encrypted persistent state
@@ -104,7 +108,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          source_dir="$GITHUB_WORKSPACE/plugins/custom-model-manager"
+          source_dir="$HERMES_HOME/hermes-agent/plugins/custom-model-manager"
           target_dir="$HERMES_HOME/plugins/custom-model-manager"
           test -f "$source_dir/plugin.yaml"
           test -f "$source_dir/__init__.py"
@@ -155,6 +159,35 @@ jobs:
           "$runtime_python" /tmp/hermes-runtime-check.py
 
           "$runtime_python" -m py_compile "$HERMES_HOME/plugins/custom-model-manager/__init__.py"
+
+          cat > /tmp/hermes-plugin-smoke.py <<'PY'
+          from hermes_cli.plugins import discover_plugins, get_plugin_command_handler
+          from hermes_cli.plugin_choices import bind_asker
+
+          discover_plugins()
+          handler = get_plugin_command_handler('addmodel')
+          if not callable(handler):
+              raise SystemExit('ERROR: custom-model-manager did not register /addmodel')
+
+          text_answers = iter([
+              'Hermes deployment smoke test',
+              'https://example.invalid/v1',
+              'SMOKE-TEST-NOT-A-REAL-KEY',
+          ])
+
+          def fake_asker(_question, choices):
+              if choices is None:
+                  return next(text_answers)
+              return '❌ Reject'  # Never write a provider or touch config/.env in this smoke test.
+
+          with bind_asker(fake_asker):
+              result = handler('')
+          if result != 'Request rejected. No provider was saved.':
+              raise SystemExit(f'ERROR: /addmodel prompt smoke test failed: {result}')
+          print('custom-model-manager: /addmodel registered; ask_text + ask_choice passed; no data written.')
+          PY
+
+          PYTHONPATH="$HERMES_HOME/hermes-agent" "$runtime_python" /tmp/hermes-plugin-smoke.py
           hermes --help >/dev/null
           echo 'Runtime verification passed.'
 
@@ -225,7 +258,11 @@ jobs:
           output = Path('/tmp/hermes-backup/hermes')
           for source in home.rglob('*.db'):
               relative = source.relative_to(home)
-              if 'installs' in relative.parts or 'hermes-agent' in relative.parts:
+              # The rsync above intentionally excludes cache/ and logs/. Do not
+              # re-introduce their disposable SQLite files through this snapshot pass.
+              # In particular, cache/scratch can contain thousands of temporary DBs.
+              if any(part in {'installs', 'hermes-agent', 'cache', 'logs', 'scratch'}
+                     for part in relative.parts):
                   continue
               target = output / relative
               target.parent.mkdir(parents=True, exist_ok=True)
