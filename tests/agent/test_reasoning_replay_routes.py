@@ -44,6 +44,8 @@ def _wire(provider, base_url, model="m", rejected=()):
     ("novita", "https://api.novita.ai/openai/v1", "m", {"reasoning_content", "reasoning_details"}),
     ("ollama-cloud", "https://ollama.com/v1", "m", {"reasoning_content", "reasoning"}),
     ("custom", "http://127.0.0.1:8080/v1", "m", {"reasoning_content", "reasoning"}),
+    # Named custom providers can target remote NIM/aggregators; do not assume local alias semantics.
+    ("custom", "https://integrate.api.nvidia.com/v1", "minimaxai/minimax-m3.1-flash", {"reasoning_content"}),
     # everyone else: the de-facto standard alias
     ("zai", "https://api.z.ai/api/paas/v4", "glm-5.3", {"reasoning_content"}),
     ("openai-api", "https://api.openai.com/v1", "gpt-5", {"reasoning_content"}),
@@ -136,6 +138,56 @@ def test_route_shaping_keeps_private_native_carrier_for_the_transport():
     wire = shape_wire_carriers([api], model="gemini-3.5-pro", base_url=base)[0]
     assert wire["extra_content"] == record["extra_content"]
     assert "reasoning_details" not in wire
+
+
+def test_duplicate_field_alias_collision_learns_alias_only_and_never_loops():
+    from agent.message_sanitization import record_reasoning_field_rejection
+
+    agent = SimpleNamespace(
+        provider="custom", model="minimaxai/minimax-m3.1-flash",
+        base_url="https://integrate.api.nvidia.com/v1", api_mode="chat_completions",
+        _reasoning_rejecting_routes={}, session_id=None,
+    )
+    sent = [{
+        "role": "assistant", "content": "old assistant turn",
+        "reasoning_content": "thought", "reasoning": "thought",
+        "reasoning_details": _DETAILS,
+    }]
+    body = "messages[3]: duplicate field `reasoning_content`"
+
+    learned = record_reasoning_field_rejection(agent, body, sent)
+    assert learned == {"reasoning", "reasoning_details"}
+
+    route = reasoning_replay_route(
+        "chat_completions", agent.provider, agent.model, agent.base_url,
+        rejected=rejected_reasoning_carriers(agent),
+    )
+    assert route.carriers == {"reasoning_content"}
+    wire = deepcopy(sent[0])
+    apply_reasoning_content_policy(sent[0], wire, route.pad, route.carriers)
+    assert wire["reasoning_content"] == "thought"
+    assert "reasoning" not in wire and "reasoning_details" not in wire
+
+    # An unchanged duplicate-field response after the retry cannot create another retry.
+    assert record_reasoning_field_rejection(agent, body, [wire]) == frozenset()
+    assert rejected_reasoning_carriers(agent) == {"reasoning", "reasoning_details"}
+
+
+def test_duplicate_unrelated_field_does_not_strip_reasoning_carriers():
+    from agent.message_sanitization import record_reasoning_field_rejection
+
+    agent = SimpleNamespace(
+        provider="custom", model="remote-model", base_url="https://gateway.example/v1",
+        api_mode="chat_completions", _reasoning_rejecting_routes={}, session_id=None,
+    )
+    sent = [{
+        "role": "assistant", "reasoning_content": "thought",
+        "reasoning": "thought", "reasoning_details": _DETAILS,
+    }]
+    assert record_reasoning_field_rejection(
+        agent, "messages[0]: duplicate field `content`", sent
+    ) == frozenset()
+    assert agent._reasoning_rejecting_routes == {}
 
 
 def test_value_complaint_never_strips_reasoning_content_from_a_must_echo_route():
