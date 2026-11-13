@@ -305,7 +305,7 @@ jobs:
               --exclude='*.sqlite3-wal' \
               --exclude='*.sqlite3-shm' \
               --exclude='*.sqlite3-journal' \
-              "$HERMES_HOME/" "$work/hermes/"
+              "$HERMES_HOME/" "$work/hermes/" || return 1
 
             # Use SQLite's online backup API: it includes committed WAL content and
             # produces a standalone database file without copying live -wal/-shm files.
@@ -366,13 +366,14 @@ jobs:
           )
           print(f"Snapshot set ready: {len(database_files)} SQLite DB(s), {total_bytes / (1024 * 1024):.1f} MiB.")
           PY
+            [ "$?" -eq 0 ] || return 1
 
             # Low compression level favors predictable backup speed over CPU-heavy compression.
-            tar -cf - -C "$work" hermes manifest.json | gzip -1 > "$work/hermes-state.tar.gz"
+            tar -cf - -C "$work" hermes manifest.json | gzip -1 > "$work/hermes-state.tar.gz" || return 1
             openssl enc -aes-256-cbc -pbkdf2 -salt \
               -in "$work/hermes-state.tar.gz" \
               -out "$work/hermes-state.enc" \
-              -pass env:HERMES_BACKUP_KEY
+              -pass env:HERMES_BACKUP_KEY || return 1
 
             if ! gh release view hermes-state --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
               gh release create hermes-state --repo "$GITHUB_REPOSITORY" \
@@ -382,15 +383,15 @@ jobs:
             fi
 
             local name="hermes-state-$(date -u +%Y%m%d-%H%M%S).enc"
-            mv "$work/hermes-state.enc" "$work/$name"
+            mv "$work/hermes-state.enc" "$work/$name" || return 1
 
             # Upload first so a failed upload never destroys the last known-good backup.
-            gh release upload hermes-state "$work/$name" --repo "$GITHUB_REPOSITORY"
+            gh release upload hermes-state "$work/$name" --repo "$GITHUB_REPOSITORY" || return 1
 
             # Retain two complete generations; the previous model-only asset naturally
             # ages out after two successful fresh-state snapshots.
             local old_assets failed=0
-            old_assets="$(gh release view hermes-state --repo "$GITHUB_REPOSITORY" --json assets --jq '[.assets[] | select(.name | startswith("hermes-state-") and endswith(".enc"))] | sort_by(.createdAt) | reverse | .[2:] | .[].name')"
+            old_assets="$(gh release view hermes-state --repo "$GITHUB_REPOSITORY" --json assets --jq '[.assets[] | select(.name | startswith("hermes-state-") and endswith(".enc"))] | sort_by(.createdAt) | reverse | .[2:] | .[].name')" || return 1
             while IFS= read -r old; do
               [ -n "$old" ] || continue
               gh release delete-asset hermes-state "$old" --repo "$GITHUB_REPOSITORY" --yes || failed=1
