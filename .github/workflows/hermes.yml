@@ -314,7 +314,8 @@ jobs:
               return 1
             fi
 
-            echo "Encrypted persistent-state backup uploaded: $name"
+            backup_bytes="$(stat -c%s "$work/$name")"
+            echo "Encrypted durable-state backup uploaded: $name ($backup_bytes bytes)"
             rm -rf "$work"
           )
 
