@@ -418,10 +418,11 @@ jobs:
           # End the gateway proactively before GitHub's 350-minute hard job timeout,
           # leaving time for graceful shutdown and the final encrypted snapshot.
           rm -f /tmp/hermes-planned-shutdown
+          MAIN_SHELL_PID=$BASHPID
           (
             sleep 320m
             touch /tmp/hermes-planned-shutdown
-            kill -TERM "$" 2>/dev/null || true
+            kill -TERM "$MAIN_SHELL_PID" 2>/dev/null || true
           ) &
           DEADLINE_PID=$!
 
