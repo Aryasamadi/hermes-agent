@@ -93,22 +93,22 @@ jobs:
               Path("plugin-data/custom-model-manager/models.json"),
           )
           copied = []
-          def copy_allowed(src_root: Path, dst_root: Path, prefix: Path = Path()):
+          def copy_allowed(src_root: Path, dst_root: Path):
               for relative in allowed:
                   src = src_root / relative
                   if src.is_file():
-                      dst = dst_root / prefix / relative
+                      dst = dst_root / relative
                       dst.parent.mkdir(parents=True, exist_ok=True)
                       shutil.copy2(src, dst)
                       if dst.name == ".env":
                           dst.chmod(0o600)
-                      copied.append(str(prefix / relative))
+                      copied.append(str(dst.relative_to(home)))
 
           copy_allowed(source, home)
           profiles = source / "profiles"
           if profiles.is_dir():
               for profile in sorted(p for p in profiles.iterdir() if p.is_dir()):
-                  copy_allowed(profile, home / "profiles" / profile.name, Path("profiles") / profile.name)
+                  copy_allowed(profile, home / "profiles" / profile.name)
 
           if not (home / "config.yaml").is_file():
               raise SystemExit("ERROR: config.yaml was not present in the backup; refusing to start without model configuration.")
@@ -291,22 +291,22 @@ jobs:
           )
           copied = []
 
-          def copy_allowed(src_root: Path, dst_root: Path, prefix: Path = Path()):
+          def copy_allowed(src_root: Path, dst_root: Path):
               for relative in allowed:
                   src = src_root / relative
                   if src.is_file():
-                      dst = dst_root / prefix / relative
+                      dst = dst_root / relative
                       dst.parent.mkdir(parents=True, exist_ok=True)
                       shutil.copy2(src, dst)
                       if dst.name == ".env":
                           dst.chmod(0o600)
-                      copied.append(str(prefix / relative))
+                      copied.append(str(dst.relative_to(output)))
 
           copy_allowed(home, output)
           profiles = home / "profiles"
           if profiles.is_dir():
               for profile in sorted(p for p in profiles.iterdir() if p.is_dir()):
-                  copy_allowed(profile, output / "profiles" / profile.name, Path("profiles") / profile.name)
+                  copy_allowed(profile, output / "profiles" / profile.name)
 
           if not (output / "config.yaml").is_file():
               raise SystemExit("ERROR: refusing to create a model-only backup without config.yaml.")
@@ -337,7 +337,7 @@ jobs:
             gh release upload hermes-state "$work/$name" --repo "$GITHUB_REPOSITORY"
 
             local old_assets
-            old_assets="$(gh release view hermes-state --repo "$GITHUB_REPOSITORY" --json assets --jq '[.assets[] | select((.name | startswith("hermes-state-") and endswith(".enc")) and .name != "'"$name"'")] | .[].name')"
+            old_assets="$(gh release view hermes-state --repo "$GITHUB_REPOSITORY" --json assets --jq ".assets[] | select((.name | startswith(\"hermes-state-\") and endswith(\".enc\")) and .name != \"$name\") | .name")"
             while IFS= read -r old; do
               [ -n "$old" ] || continue
               gh release delete-asset hermes-state "$old" --repo "$GITHUB_REPOSITORY" --yes \
