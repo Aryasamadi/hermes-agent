@@ -34,7 +34,7 @@ DURABLE_DIRS = (
 )
 SKIP_DIRS = {
     ".git", "__pycache__", "cache", "caches", "hermes-agent", "installs",
-    "logs", "output", "scratch", "tmp", "workspaces", "venv", "venvs",
+    "logs", "scratch", "tmp", "workspaces", "venv", "venvs",
 }
 SKIP_FILE_SUFFIXES = (
     ".lock", ".sock", ".tmp", ".swp", ".db", ".sqlite", ".sqlite3",
