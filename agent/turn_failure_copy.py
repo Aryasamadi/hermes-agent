@@ -232,8 +232,8 @@ _NONRETRYABLE_COPY: dict[str, str] = {
     ),
 }
 _NVIDIA_PUBLIC_API_ENTITLEMENT_COPY = (
-    "{label}'s hosted inference endpoint could not resolve the Function registered for this "
-    "account. This 404 is commonly associated with missing NVIDIA `Public API Endpoints` access "
+    "NVIDIA's hosted inference endpoint could not resolve the Function registered for this "
+    "account. This 404 is commonly associated with missing `Public API Endpoints` access "
     "or an NVIDIA-side account/Function mapping problem. Repeating the same request will not fix "
     "it; check the account's NVIDIA API access or switch to another provider."
 )
