@@ -272,9 +272,14 @@ def snapshot_home(home: Path, work: Path) -> dict[str, Any]:
         encoding="utf-8",
     )
     print(
-        f"Snapshot ready: {len(files)} durable files, {len(databases)} SQLite DB(s), "
-        f"{manifest['database_bytes'] / (1024 * 1024):.2f} MiB of databases."
+        f"Snapshot ready: {len(files)} durable files "
+        f"({manifest['durable_file_bytes'] / (1024 * 1024):.2f} MiB), "
+        f"{len(databases)} SQLite DB(s) "
+        f"({manifest['database_bytes'] / (1024 * 1024):.2f} MiB)."
     )
+    for item in sorted(files, key=lambda entry: entry["bytes"], reverse=True)[:10]:
+        if item["bytes"] >= 1024 * 1024:
+            print(f"Large retained state file: {item['path']} ({item['bytes'] / (1024 * 1024):.2f} MiB)")
     return manifest
 
 
