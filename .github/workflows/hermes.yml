@@ -348,6 +348,8 @@ jobs:
             rm -rf "$work"
           }
 
+          # Create the compact backup immediately before the gateway starts.
+          backup
           (
             while true; do
               sleep 600
