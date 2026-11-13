@@ -380,7 +380,7 @@ def _restore_legacy_model_settings(
     }
     manifest_out.parent.mkdir(parents=True, exist_ok=True)
     manifest_out.write_text(
-        json.dumps(normalized, indent=2, ensure_ascii=False) + "\\n",
+        json.dumps(normalized, indent=2, ensure_ascii=False) + "\n",
         encoding="utf-8",
     )
     validate_home(home, normalized)
