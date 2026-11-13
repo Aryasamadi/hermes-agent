@@ -47,11 +47,11 @@ jobs:
       - name: Restore encrypted persistent state
         shell: bash
         env:
-          GH_TOKEN: \${{ github.token }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           mkdir -p "$HERMES_HOME" /tmp/hermes-restore /tmp/hermes-extract
-          if [ -z "\${HERMES_BACKUP_KEY:-}" ]; then
+          if [ -z "${HERMES_BACKUP_KEY:-}" ]; then
             echo 'ERROR: HERMES_BACKUP_KEY secret is missing.'
             exit 1
           fi
