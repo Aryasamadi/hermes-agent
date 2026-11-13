@@ -18,12 +18,10 @@ class _APIError(Exception):
 
 def _function_not_found_error() -> _APIError:
     return _APIError(
-        "HTTP 404: {\\"status\\":404,\\"title\\":\\"Not Found\\","
-        "\\"detail\\":\\"Function 'f238fb4a-8a45-473f-a81f-b7d30f56e2b0': "
-        "Not found for account 'account-hash'\\"}",
+        "HTTP 404: Function 'f238fb4a-8a45-473f-a81f-b7d30f56e2b0': "
+        "Not found for account 'account-hash'",
         status_code=404,
     )
-
 
 def test_nvidia_account_function_404_is_terminal_and_falls_back_without_retry():
     error = _function_not_found_error()
