@@ -669,7 +669,10 @@ _REASONING_CARRIER_ROUTES: tuple = (
     # Vendors that document reasoning_details replay next to reasoning_content.
     (frozenset({RC, RD}), frozenset({"novita", "tencent-tokenhub", "minimax", "minimax-cn"}),
      ("novita.ai", "tokenhub.tencentmaas.com", "tokenhub-intl.tencentcloudmaas.com", "minimax.io", "minimaxi.com")),
-    (_LOCAL_CARRIERS, frozenset({"ollama-cloud", "custom", "lmstudio", "upstage"}), ("ollama.com", "upstage.ai")),
+    # "custom" is not a capability signal: named custom providers often point to remote
+    # aggregators or NVIDIA NIM. They get the standard reasoning_content carrier; local
+    # endpoints are detected by is_local_endpoint() and retain the local alias pair.
+    (_LOCAL_CARRIERS, frozenset({"ollama-cloud", "lmstudio", "upstage"}), ("ollama.com", "upstage.ai")),
 )
 
 
@@ -907,11 +910,11 @@ def reapply_reasoning_echo(api_messages: list, needs_thinking_pad: bool, carrier
     return changed
 
 
-# Provider error bodies (lowercased) for "this request carries a key my schema does not know".
+# Provider error bodies (lowercased) that identify a rejected reasoning carrier, including alias collisions.
 _UNKNOWN_FIELD_PHRASES = (
     "extra inputs are not permitted", "is unsupported", "no such field", "unknown field",
     "unrecognized request argument", "unrecognized field", "unknown parameter", "unexpected field",
-    "additional propert", "unknown key",
+    "additional propert", "unknown key", "duplicate field",
 )
 _NAMED_FIELD_RES = {
     RC: re.compile(r"(?<![\w])reasoning_content(?![\w])"),
@@ -924,10 +927,9 @@ _NAMED_FIELD_RES = {
 def rejected_reasoning_fields(error_body: Any, sent_messages: Any) -> frozenset:
     """Reasoning keys to drop after an unknown-field rejection that names one this request carried.
 
-    Strict schemas report one offending key per error, so the drop is widened to the keys the
-    same schema will reject next: a rejected ``reasoning_details`` / ``reasoning`` takes the
-    other non-standard carrier too (``reasoning_content`` still carries the text); a rejected
-    ``reasoning_content`` (the most widely accepted alias) takes all three. One retry, not three.
+    Unknown-field errors widen to the related carriers the strict schema will also reject.
+    Duplicate-field errors are different: when ``reasoning_content`` is named, it is the
+    canonical field to preserve and only the colliding aliases are removed. One retry, not a loop.
     """
     body = str(error_body or "").lower()
     if not any(phrase in body for phrase in _UNKNOWN_FIELD_PHRASES):
@@ -939,6 +941,15 @@ def rejected_reasoning_fields(error_body: Any, sent_messages: Any) -> frozenset:
     named = {key for key in sent if _NAMED_FIELD_RES[key].search(body)}
     if not named:
         return frozenset()
+
+    if "duplicate field" in body:
+        # A serde alias collision is the inverse of an unknown-field rejection:
+        # reasoning_content is the canonical field the server understands, while
+        # reasoning / reasoning_details are aliases that collide with it. Preserve
+        # RC even on non-must-echo routes and drop only the alias carrier(s).
+        aliases = {R, RD} if RC in named else named & {R, RD}
+        return frozenset(sent & aliases)
+
     return frozenset(sent & (_ALL_CARRIERS if RC in named else {R, RD}))
 
 
