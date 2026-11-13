@@ -5,8 +5,10 @@ on:
     paths:
       - "agent/message_sanitization.py"
       - "agent/error_classifier.py"
+      - "agent/turn_failure_copy.py"
       - "tests/agent/test_reasoning_replay_routes.py"
       - "tests/agent/test_error_classifier_content_policy.py"
+      - "tests/agent/test_nvidia_endpoint_entitlement.py"
       - ".github/workflows/focused-provider-tests.yml"
 
 permissions:
@@ -47,6 +49,7 @@ jobs:
           python -m pytest \
             tests/agent/test_reasoning_replay_routes.py \
             tests/agent/test_error_classifier_content_policy.py \
+            tests/agent/test_nvidia_endpoint_entitlement.py \
             -q --tb=short
         env:
           OPENROUTER_API_KEY: ""
