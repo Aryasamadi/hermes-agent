@@ -327,14 +327,83 @@ def _load_manifest(path: Path) -> dict[str, Any]:
     return value
 
 
+def _restore_legacy_model_settings(
+    source_home: Path, home: Path, manifest_out: Path,
+) -> None:
+    """Seed a clean runtime from a pre-v2 archive without reviving old user data.
+
+    Format-v1 archives were created before the operator asked for a fresh data
+    baseline. They may contain old conversations, databases and memories, so
+    only the three original model/configuration files are eligible for import.
+    The first format-v2 snapshot, taken by the new runner, becomes the first
+    generation that is allowed to restore durable session data.
+    """
+    allowed = (
+        Path("config.yaml"),
+        Path(".env"),
+        Path("plugin-data/custom-model-manager/models.json"),
+    )
+    copied: list[dict[str, Any]] = []
+
+    def copy_model_files(source_root: Path, destination_root: Path) -> None:
+        for relative in allowed:
+            source = source_root / relative
+            destination = destination_root / relative
+            if _copy_one(source, destination):
+                copied.append({
+                    "path": destination.relative_to(home).as_posix(),
+                    "bytes": destination.stat().st_size,
+                    "sha256": _sha256(destination),
+                })
+
+    copy_model_files(source_home, home)
+    profiles = source_home / "profiles"
+    if profiles.is_dir() and not profiles.is_symlink():
+        for profile in sorted(profiles.iterdir()):
+            if profile.is_symlink() or not profile.is_dir():
+                continue
+            copy_model_files(profile, home / "profiles" / profile.name)
+
+    if not (home / "config.yaml").is_file():
+        raise RuntimeError("legacy backup does not contain config.yaml; refusing a blank model configuration")
+
+    # Write a normalized v2 validation record for precisely what was imported.
+    # It deliberately has no database/session entries from the legacy archive.
+    normalized = {
+        "format_version": FORMAT_VERSION,
+        "created_at_utc": datetime.now(timezone.utc).isoformat(),
+        "legacy_seed": "model-settings-only",
+        "durable_files": copied,
+        "database_files": [],
+        "database_bytes": 0,
+        "durable_file_bytes": sum(item["bytes"] for item in copied),
+    }
+    manifest_out.parent.mkdir(parents=True, exist_ok=True)
+    manifest_out.write_text(
+        json.dumps(normalized, indent=2, ensure_ascii=False) + "\\n",
+        encoding="utf-8",
+    )
+    validate_home(home, normalized)
+    print(
+        "Legacy format-v1 baseline imported model settings only; "
+        "old sessions, SQLite databases, memories, queues and other runtime data were not restored."
+    )
+
+
 def restore_home(source_home: Path, manifest_path: Path, home: Path, manifest_out: Path) -> None:
     source_home = source_home.resolve()
     home = home.resolve()
     manifest = _load_manifest(manifest_path)
+    version = manifest.get("format_version", 1)
+
+    if version == 1:
+        _restore_legacy_model_settings(source_home, home, manifest_out)
+        return
+    if version != FORMAT_VERSION:
+        raise RuntimeError(f"unsupported Hermes backup format: {version!r}")
+
     _validate_manifest(source_home, manifest)
 
-    # Copy only the durable allowlist even when reading a format-v1 archive,
-    # whose older implementation included unrelated files from the whole home.
     _copy_durable_layout(source_home, home)
     for item in manifest.get("database_files", []):
         relative = _safe_relative(item["path"])
