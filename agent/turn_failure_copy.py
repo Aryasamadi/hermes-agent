@@ -231,6 +231,12 @@ _NONRETRYABLE_COPY: dict[str, str] = {
         "the proxy/WAF rules, or switch providers with /model."
     ),
 }
+_NVIDIA_PUBLIC_API_ENTITLEMENT_COPY = (
+    "{label}'s hosted inference endpoint could not resolve the Function registered for this "
+    "account. This 404 is commonly associated with missing NVIDIA `Public API Endpoints` access "
+    "or an NVIDIA-side account/Function mapping problem. Repeating the same request will not fix "
+    "it; check the account's NVIDIA API access or switch to another provider."
+)
 _NONRETRYABLE_DEFAULT_COPY = (
     "{label} rejected the request and retrying won't help. Pick another model with /model, "
     "or check the details in `{home}/logs/agent.log`."
@@ -446,7 +452,10 @@ def nonretryable_copy(
 ) -> str:
     """Chat copy for a terminal non-retryable rejection (auth, model missing, TLS, generic 4xx)."""
     label = provider_label_for(provider)
-    if getattr(classified, "is_auth", False):
+    error_context = getattr(classified, "error_context", {}) or {}
+    if error_context.get("provider_access") == "nvidia_public_api_endpoints":
+        template = _NVIDIA_PUBLIC_API_ENTITLEMENT_COPY
+    elif getattr(classified, "is_auth", False):
         from agent.error_surface import auth_kind
 
         template = _AUTH_COPY[auth_kind(str(provider or ""))]
