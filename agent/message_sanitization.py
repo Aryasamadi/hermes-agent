@@ -910,7 +910,7 @@ def reapply_reasoning_echo(api_messages: list, needs_thinking_pad: bool, carrier
     return changed
 
 
-# Provider error bodies (lowercased) for "this request carries a key my schema does not know".
+# Provider error bodies (lowercased) that identify a rejected reasoning carrier, including alias collisions.
 _UNKNOWN_FIELD_PHRASES = (
     "extra inputs are not permitted", "is unsupported", "no such field", "unknown field",
     "unrecognized request argument", "unrecognized field", "unknown parameter", "unexpected field",
@@ -927,10 +927,9 @@ _NAMED_FIELD_RES = {
 def rejected_reasoning_fields(error_body: Any, sent_messages: Any) -> frozenset:
     """Reasoning keys to drop after an unknown-field rejection that names one this request carried.
 
-    Strict schemas report one offending key per error, so the drop is widened to the keys the
-    same schema will reject next: a rejected ``reasoning_details`` / ``reasoning`` takes the
-    other non-standard carrier too (``reasoning_content`` still carries the text); a rejected
-    ``reasoning_content`` (the most widely accepted alias) takes all three. One retry, not three.
+    Unknown-field errors widen to the related carriers the strict schema will also reject.
+    Duplicate-field errors are different: when ``reasoning_content`` is named, it is the
+    canonical field to preserve and only the colliding aliases are removed. One retry, not a loop.
     """
     body = str(error_body or "").lower()
     if not any(phrase in body for phrase in _UNKNOWN_FIELD_PHRASES):
