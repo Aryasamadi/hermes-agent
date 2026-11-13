@@ -137,7 +137,20 @@ def scan_for_threats(content: str, scope: str = "context") -> list[str]:
         raise ValueError(f"scan_for_threats: unknown scope {scope!r}")
     content = content[:MAX_SCAN_CHARS]
     # Invisible unicode is checked on the RAW content: NFKC below can strip these codepoints.
-    findings: list[str] = [f"invisible_unicode_U+{ord(ch):04X}" for ch in set(content) & INVISIBLE_CHARS]
+    # Persian uses U+200C (ZWNJ) as an ordinary orthographic joiner. Permit it only
+    # when it is directly between two Arabic-script letters; every other placement,
+    # including use inside Latin prompt text, remains blocked as a possible injection.
+    findings: list[str] = []
+    for index, ch in enumerate(content):
+        if ch not in INVISIBLE_CHARS:
+            continue
+        if ch == "\u200c" and index > 0 and index + 1 < len(content):
+            left_name = unicodedata.name(content[index - 1], "")
+            right_name = unicodedata.name(content[index + 1], "")
+            if left_name.startswith("ARABIC LETTER ") and right_name.startswith("ARABIC LETTER "):
+                continue
+        findings.append(f"invisible_unicode_U+{ord(ch):04X}")
+    findings = sorted(set(findings))
     # NFKC folds full-width / compatibility variants (ｃａｔ → cat) against homograph bypass.
     # It does NOT fold cross-script confusables (Cyrillic ``а``) — that needs a TR#39 database.
     normalised = unicodedata.normalize("NFKC", content)
