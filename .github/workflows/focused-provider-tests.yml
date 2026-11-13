@@ -34,12 +34,12 @@ jobs:
             pyproject.toml
             uv.lock
 
-      - name: Set up Python 3.11
-        run: uv python install 3.11
+      - name: Set up Python 3.14
+        run: uv python install 3.14
 
       - name: Install test dependencies
         run: |
-          uv sync --locked --python 3.11 --extra all --group dev --group test
+          uv sync --locked --python 3.14 --extra all --group dev --group test
 
       - name: Run focused regression tests
         run: |
