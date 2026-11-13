@@ -282,8 +282,8 @@ jobs:
               return 1
             fi
 
-            rm -rf "$work"
-            mkdir -p "$work/hermes"
+            rm -rf "$work" || return 1
+            mkdir -p "$work/hermes" || return 1
 
             # Copy durable files while excluding generated runtime components and all
             # SQLite originals/sidecars. Databases are snapshotted separately below.
@@ -417,9 +417,11 @@ jobs:
 
           # End the gateway proactively before GitHub's 350-minute hard job timeout,
           # leaving time for graceful shutdown and the final encrypted snapshot.
+          rm -f /tmp/hermes-planned-shutdown
           (
             sleep 320m
-            kill -TERM "$$" 2>/dev/null || true
+            touch /tmp/hermes-planned-shutdown
+            kill -TERM "$" 2>/dev/null || true
           ) &
           DEADLINE_PID=$!
 
@@ -443,6 +445,10 @@ jobs:
             wait "$GATEWAY_PID" 2>/dev/null || true
 
             backup || echo 'WARNING: Final encrypted persistent-state backup failed.'
+            if [ -f /tmp/hermes-planned-shutdown ]; then
+              echo 'Planned gateway shutdown completed before the GitHub job deadline.'
+              status=0
+            fi
             exit "$status"
           }
           trap cleanup EXIT
