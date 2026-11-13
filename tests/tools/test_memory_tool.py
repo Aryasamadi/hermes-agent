@@ -96,6 +96,11 @@ class TestScanMemoryContent:
         for ch in ("⁦", "⁧", "⁨", "⁢", "⁣", "⁤"):
             _blocked(f"text{ch}hidden⁩")
 
+    def test_persian_memory_with_orthographic_zwnj_is_saved(self, store):
+        result = store.add("memory", "یادداشت‌های مهم کاربر باید حفظ شود.")
+        assert result["success"] is True
+        assert "یادداشت‌های مهم کاربر باید حفظ شود." in store.memory_entries
+
 
 # =========================================================================
 # MemoryStore core operations

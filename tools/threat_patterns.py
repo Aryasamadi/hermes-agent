@@ -107,6 +107,7 @@ _PATTERNS: list[tuple[str, str, str]] = [
 # Invisible / bidirectional unicode used in injection attacks (aligned with skills_guard.py
 # INVISIBLE_CHARS): zero-width space/non-joiner/joiner, word joiner, invisible times/separator/
 # plus, BOM, LTR/RTL embedding + pop + overrides, LTR/RTL/first-strong isolates + pop.
+# U+200C has a narrow exception below for valid Arabic-script orthographic joining.
 INVISIBLE_CHARS = frozenset(
     "\u200b\u200c\u200d\u2060\u2062\u2063\u2064\ufeff"
     "\u202a\u202b\u202c\u202d\u202e\u2066\u2067\u2068\u2069")
@@ -130,14 +131,28 @@ _COMPILED = _compile()
 
 def scan_for_threats(content: str, scope: str = "context") -> list[str]:
     """Matched pattern IDs in ``content`` for ``scope``; invisible codepoints are
-    reported as ``"invisible_unicode_U+XXXX"``. Raises ValueError on an unknown scope."""
+    reported as ``"invisible_unicode_U+XXXX"``, except a Persian/Arabic ZWNJ directly
+    joining two Arabic-script letters. Raises ValueError on an unknown scope."""
     if not content:
         return []
     if (patterns := _COMPILED.get(scope)) is None:
         raise ValueError(f"scan_for_threats: unknown scope {scope!r}")
     content = content[:MAX_SCAN_CHARS]
     # Invisible unicode is checked on the RAW content: NFKC below can strip these codepoints.
-    findings: list[str] = [f"invisible_unicode_U+{ord(ch):04X}" for ch in set(content) & INVISIBLE_CHARS]
+    # Persian uses U+200C (ZWNJ) as an ordinary orthographic joiner. Permit it only
+    # when it is directly between two Arabic-script letters; every other placement,
+    # including use inside Latin prompt text, remains blocked as a possible injection.
+    findings: list[str] = []
+    for index, ch in enumerate(content):
+        if ch not in INVISIBLE_CHARS:
+            continue
+        if ch == "\u200c" and index > 0 and index + 1 < len(content):
+            left_name = unicodedata.name(content[index - 1], "")
+            right_name = unicodedata.name(content[index + 1], "")
+            if left_name.startswith("ARABIC LETTER ") and right_name.startswith("ARABIC LETTER "):
+                continue
+        findings.append(f"invisible_unicode_U+{ord(ch):04X}")
+    findings = sorted(set(findings))
     # NFKC folds full-width / compatibility variants (ｃａｔ → cat) against homograph bypass.
     # It does NOT fold cross-script confusables (Cyrillic ``а``) — that needs a TR#39 database.
     normalised = unicodedata.normalize("NFKC", content)
