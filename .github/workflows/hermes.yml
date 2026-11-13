@@ -309,7 +309,7 @@ jobs:
 
             # Use SQLite's online backup API: it includes committed WAL content and
             # produces a standalone database file without copying live -wal/-shm files.
-            /usr/bin/python3 - <<'PY'
+            /usr/bin/python3 - <<'PY' || return 1
           import json
           import os
           import sqlite3
@@ -366,7 +366,6 @@ jobs:
           )
           print(f"Snapshot set ready: {len(database_files)} SQLite DB(s), {total_bytes / (1024 * 1024):.1f} MiB.")
           PY
-            [ "$?" -eq 0 ] || return 1
 
             # Low compression level favors predictable backup speed over CPU-heavy compression.
             tar -cf - -C "$work" hermes manifest.json | gzip -1 > "$work/hermes-state.tar.gz" || return 1
@@ -379,7 +378,7 @@ jobs:
               gh release create hermes-state --repo "$GITHUB_REPOSITORY" \
                 --title 'Hermes Persistent State (Encrypted)' \
                 --notes 'Encrypted snapshots of durable Hermes state, including SQLite online-backup snapshots and model/provider settings. Source checkouts, Python environments, caches, logs and live SQLite sidecars are excluded. Latest two snapshots are retained.' \
-                --latest=false
+                --latest=false || return 1
             fi
 
             local name="hermes-state-$(date -u +%Y%m%d-%H%M%S).enc"
