@@ -951,7 +951,7 @@ def rejected_reasoning_fields(error_body: Any, sent_messages: Any) -> frozenset:
         aliases = {R, RD} if RC in named else named & {R, RD}
         return frozenset(sent & aliases)
 
-    return frozenset(sent & (_ALL_CARRIERS if RC in named else {R, RD})
+    return frozenset(sent & (_ALL_CARRIERS if RC in named else {R, RD}))
 
 
 def reasoning_route_key(agent: Any) -> tuple[str, str, str]:
