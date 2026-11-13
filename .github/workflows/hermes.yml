@@ -83,36 +83,89 @@ jobs:
               fi
 
               if ! /usr/bin/python3 - <<'PY'
+          import json
           import shutil
           import tarfile
           from pathlib import Path, PurePosixPath
 
           archive = Path("/tmp/hermes-state.tar.gz")
           destination = Path("/tmp/hermes-extract")
+          destination.mkdir(parents=True, exist_ok=True)
+
           with tarfile.open(archive, "r:gz") as bundle:
+              try:
+                  manifest_member = bundle.getmember("manifest.json")
+              except KeyError:
+                  raise SystemExit("Backup archive has no manifest.json.")
+              if not manifest_member.isfile():
+                  raise SystemExit("Backup manifest is not a regular file.")
+              stream = bundle.extractfile(manifest_member)
+              if stream is None:
+                  raise SystemExit("Cannot read backup manifest.")
+              with stream:
+                  manifest = json.load(stream)
+
+              version = manifest.get("format_version", 1)
+              if version == 1:
+                  # v1 archives predate the clean bootstrap. Extract only model settings;
+                  # old databases/transcripts/memories may be large and must never be revived.
+                  def allowed_legacy(parts):
+                      if parts in (("config.yaml",), (".env",),
+                                   ("plugin-data", "custom-model-manager", "models.json")):
+                          return True
+                      if len(parts) >= 3 and parts[0] == "profiles":
+                          relative = parts[2:]
+                          return relative in (
+                              ("config.yaml",), (".env",),
+                              ("plugin-data", "custom-model-manager", "models.json"),
+                          )
+                      return False
+                  allowed_files = None
+              elif version == 2:
+                  allowed_files = set()
+                  for item in manifest.get("durable_files", []) + manifest.get("database_files", []):
+                      relative = PurePosixPath(item["path"])
+                      if relative.is_absolute() or not relative.parts or ".." in relative.parts or "\\" in item["path"]:
+                          raise SystemExit(f"Unsafe manifest path: {item['path']}")
+                      allowed_files.add(relative.parts)
+                  allowed_legacy = None
+              else:
+                  raise SystemExit(f"Unsupported backup format: {version!r}")
+
               for member in bundle.getmembers():
                   path = PurePosixPath(member.name)
-                  if path.is_absolute() or ".." in path.parts or not path.parts:
+                  if path.is_absolute() or ".." in path.parts or not path.parts or "\\" in member.name:
                       raise SystemExit(f"Unsafe path in backup archive: {member.name}")
                   if path.parts[0] not in {"hermes", "manifest.json"}:
                       raise SystemExit(f"Unexpected top-level archive entry: {member.name}")
-                  # Old snapshots could contain symlinks or sockets. Do not restore them.
-                  if member.issym() or member.islnk() or not (member.isfile() or member.isdir()):
+                  if member.name == "manifest.json":
+                      allowed = True
+                  elif member.isfile() and len(path.parts) >= 2:
+                      relative = path.parts[1:]
+                      if version == 1:
+                          allowed = allowed_legacy(relative)
+                      else:
+                          allowed = relative in allowed_files
+                  else:
+                      allowed = False
+                  # Skip symlinks, sockets, caches and every non-manifest file not
+                  # explicitly named by the manifest or the clean legacy seed allowlist.
+                  if not allowed or not member.isfile():
                       continue
                   target = destination.joinpath(*path.parts)
                   target.parent.mkdir(parents=True, exist_ok=True)
-                  if member.isdir():
-                      target.mkdir(parents=True, exist_ok=True)
-                      continue
                   stream = bundle.extractfile(member)
                   if stream is None:
                       raise SystemExit(f"Cannot read archive member: {member.name}")
                   with stream, target.open("wb") as out:
                       shutil.copyfileobj(stream, out)
                   target.chmod(0o600 if target.name == ".env" or target.name.endswith(".db") else 0o644)
-          if not (destination / "manifest.json").is_file() or not (destination / "hermes").is_dir():
-              raise SystemExit("Backup archive is missing its manifest or Hermes state directory.")
-          print("Archive paths validated; unsafe filesystem entries were skipped.")
+
+          if not (destination / "manifest.json").is_file():
+              raise SystemExit("Backup archive is missing its manifest.")
+          if not (destination / "hermes").is_dir():
+              raise SystemExit("Backup archive contains no approved Hermes state files.")
+          print(f"Archive format {version}: only explicitly approved restore files were extracted.")
           PY
               then
                 echo "WARNING: Could not safely extract $asset; trying the previous snapshot."
