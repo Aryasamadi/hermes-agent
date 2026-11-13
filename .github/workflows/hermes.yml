@@ -273,7 +273,7 @@ jobs:
             echo 'WARNING: TELEGRAM_ALLOWED_USER_ID is empty; verify access-control settings.'
           fi
 
-          backup() {
+          backup() (
             local work='/tmp/hermes-backup'
             local lock_file='/tmp/hermes-backup.lock'
             exec 9>"$lock_file"
@@ -402,7 +402,7 @@ jobs:
 
             echo "Encrypted persistent-state backup uploaded: $name"
             rm -rf "$work"
-          }
+          )
 
           # Start with the clean model-only baseline, then snapshot the new live state.
           backup
@@ -454,25 +454,3 @@ jobs:
           gateway_status=$?
           set -e
           exit "$gateway_status"
-          # Create the compact backup immediately before the gateway starts.
-          backup
-          (
-            while true; do
-              sleep 600
-              backup || echo 'WARNING: Backup failed; it will retry in 10 minutes.'
-            done
-          ) &
-          BACKUP_PID=$!
-          cleanup() {
-            local status=$?
-            trap - EXIT INT TERM
-            kill "$BACKUP_PID" 2>/dev/null || true
-            wait "$BACKUP_PID" 2>/dev/null || true
-            backup || echo 'WARNING: Final backup attempt failed.'
-            exit "$status"
-          }
-          trap cleanup EXIT
-          trap 'exit 130' INT
-          trap 'exit 143' TERM
-
-          hermes gateway run
