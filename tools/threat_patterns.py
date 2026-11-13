@@ -107,6 +107,7 @@ _PATTERNS: list[tuple[str, str, str]] = [
 # Invisible / bidirectional unicode used in injection attacks (aligned with skills_guard.py
 # INVISIBLE_CHARS): zero-width space/non-joiner/joiner, word joiner, invisible times/separator/
 # plus, BOM, LTR/RTL embedding + pop + overrides, LTR/RTL/first-strong isolates + pop.
+# U+200C has a narrow exception below for valid Arabic-script orthographic joining.
 INVISIBLE_CHARS = frozenset(
     "\u200b\u200c\u200d\u2060\u2062\u2063\u2064\ufeff"
     "\u202a\u202b\u202c\u202d\u202e\u2066\u2067\u2068\u2069")
@@ -130,7 +131,8 @@ _COMPILED = _compile()
 
 def scan_for_threats(content: str, scope: str = "context") -> list[str]:
     """Matched pattern IDs in ``content`` for ``scope``; invisible codepoints are
-    reported as ``"invisible_unicode_U+XXXX"``. Raises ValueError on an unknown scope."""
+    reported as ``"invisible_unicode_U+XXXX"``, except a Persian/Arabic ZWNJ directly
+    joining two Arabic-script letters. Raises ValueError on an unknown scope."""
     if not content:
         return []
     if (patterns := _COMPILED.get(scope)) is None:
