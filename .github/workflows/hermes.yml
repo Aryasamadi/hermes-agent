@@ -2,6 +2,11 @@ name: Hermes Agent
 
 on:
   workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - .github/workflows/hermes.yml
 
 permissions:
   contents: write
@@ -31,12 +36,14 @@ jobs:
           set -euo pipefail
           mkdir -p "$HERMES_HOME"
           curl -fsSL https://hermes-agent.nousresearch.com/install.sh -o /tmp/install-hermes.sh
-          bash /tmp/install-hermes.sh --non-interactive --skip-browser --skip-computer-use
+          # Install the same fork/branch that supplied this workflow and its custom plugin.
+          export HERMES_REPO_URL="https://github.com/${GITHUB_REPOSITORY}.git"
+          bash /tmp/install-hermes.sh --channel main --non-interactive --skip-browser --skip-computer-use
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
           export PATH="$HOME/.local/bin:$PATH"
           command -v hermes
           hermes --help >/dev/null
-          echo 'Official Hermes installation completed.'
+          echo "Hermes ${GITHUB_REPOSITORY} main installation completed."
 
       - name: Restore encrypted persistent state
         shell: bash
@@ -135,11 +142,15 @@ jobs:
           import pydantic_core._pydantic_core
           import hermes_cli.main
           import httpx
+          from hermes_cli.plugins import PluginContext
           from importlib.metadata import version
+          assert callable(getattr(PluginContext, 'ask_text', None)), 'PluginContext.ask_text is unavailable'
+          assert callable(getattr(PluginContext, 'ask_choice', None)), 'PluginContext.ask_choice is unavailable'
           print(f'snowballstemmer {version("snowballstemmer")}: OK')
           print(f'httpx {httpx.__version__}: OK')
           print('pydantic-core native extension: OK')
           print('Hermes CLI imports: OK')
+          print('Interactive plugin prompts (ask_text/ask_choice): OK')
           PY
           "$runtime_python" /tmp/hermes-runtime-check.py
 
@@ -192,7 +203,7 @@ jobs:
             rm -rf "$work"
             mkdir -p "$work/hermes"
 
-            # Back up durable user state only; the official Hermes source checkout
+            # Back up durable user state only; the Hermes source checkout
             # and PM-managed Python environments are recreated on every runner.
             rsync -a \
               --exclude='hermes-agent/' \
