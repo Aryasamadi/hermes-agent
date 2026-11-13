@@ -371,6 +371,9 @@ _CONTENT_POLICY_BLOCKED_PATTERNS = (
     "prompt was flagged by our safety", "responses cannot be generated due to safety",
     "content_filter", "responsibleaipolicyviolation", "new_sensitive",
     "content exists risk", "data may contain inappropriate content", "data_inspection_failed",
+    # NVIDIA NIM / MiniMax input guardrail (HTTP 422); this is a prompt-policy refusal,
+    # not malformed JSON or a transient provider outage.
+    "input rejected by content safety screening", "rejected by content safety screening",
 )
 
 # Auth patterns (non-status-code signals).
