@@ -1,0 +1,30 @@
+name: One-time Hermes runner dispatch
+
+on:
+  push:
+    branches:
+      - dispatch-hermes-run-20261127
+
+permissions:
+  actions: write
+  contents: read
+
+jobs:
+  dispatch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Dispatch the persistent Hermes Agent workflow on main
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPOSITORY: ${{ github.repository }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl --fail-with-body --silent --show-error \
+            --request POST \
+            --header "Authorization: Bearer ${GH_TOKEN}" \
+            --header "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${GH_REPOSITORY}/actions/workflows/hermes.yml/dispatches" \
+            --data '{"ref":"main"}'
+          echo "Hermes Agent workflow dispatched on main."
