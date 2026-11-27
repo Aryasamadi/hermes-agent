@@ -100,6 +100,28 @@ async def test_a_chat_answers_the_plugin_command_choice_with_a_typed_number(monk
     assert [s for s in adapter.sent if s.startswith("MODE=")] == ["MODE=model_map"], adapter.sent
 
 
+@pytest.mark.asyncio
+async def test_a_chat_answers_plugin_command_free_text_with_the_next_message(monkeypatch):
+    from hermes_cli import plugins as plugins_mod
+    from hermes_cli.plugin_choices import ask_text
+    from tools import clarify_gateway
+
+    adapter = _TextAdapter()
+    runner = _runner(adapter)
+    adapter.set_message_handler(runner._handle_message)
+    monkeypatch.setattr(plugins_mod, "get_plugin_command_handler", lambda name: (
+        (lambda arg: f"TEXT={ask_text('Provider name')}") if name == "addprovider" else None))
+    monkeypatch.setattr(clarify_gateway, "get_clarify_timeout", lambda: 20)
+
+    def event(text):
+        return MessageEvent(text=text, message_type=MessageType.TEXT, source=_source(), message_id=text)
+
+    await adapter.handle_message(event("/addprovider"))
+    await async_wait_until(lambda: any("Provider name" in s for s in adapter.sent), timeout=10)
+    await adapter.handle_message(event("My custom provider"))
+    await async_wait_until(lambda: any(s.startswith("TEXT=") for s in adapter.sent), timeout=10)
+    assert [s for s in adapter.sent if s.startswith("TEXT=")] == ["TEXT=My custom provider"], adapter.sent
+
 _PLUGIN = f'''
 def register(ctx):
     choices = {json.dumps(_CHOICES)}
