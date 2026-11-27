@@ -46,3 +46,20 @@ def test_model_context_warmup_failure_is_non_fatal(monkeypatch):
     _quiet_tool_side(monkeypatch, 7)
 
     assert gateway_run._warm_turn_machinery_sync() == 7
+
+def test_blank_profile_can_warm_gateway_without_a_default_model(monkeypatch):
+    """A clean profile has no model route; that must not turn Gateway startup into setup gating."""
+    monkeypatch.setattr(gateway_run, "_load_gateway_config", lambda: {"model": "", "providers": {}})
+    monkeypatch.setattr("hermes_cli.anon_auth.trial_model", lambda: "")
+    monkeypatch.setattr(gateway_run, "_resolve_runtime_agent_kwargs", lambda: {})
+    monkeypatch.setattr(
+        "agent.model_metadata.get_model_context_length",
+        lambda *args, **kwargs: 262144,
+    )
+    _quiet_tool_side(monkeypatch, 5)
+
+    assert gateway_run._resolve_gateway_model() == ""
+    context = gateway_run._resolve_gateway_model_context()
+    assert context.model == ""
+    assert context.provider == ""
+    assert gateway_run._warm_turn_machinery_sync() == 5
