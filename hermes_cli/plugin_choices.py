@@ -24,7 +24,7 @@ from typing import Callable, Iterator, Optional
 
 logger = logging.getLogger(__name__)
 
-Asker = Callable[[str, list], Optional[str]]
+Asker = Callable[[str, Optional[list]], Optional[str]]
 Choice = str | dict
 
 _ASKER: ContextVar[Optional[Asker]] = ContextVar("plugin_choice_asker", default=None)
@@ -77,6 +77,23 @@ def _running_on_loop() -> bool:
         return False
     return True
 
+
+def ask_text(question: str) -> Optional[str]:
+    """Ask the user who ran the current slash command for a free-form text reply.
+
+    The gateway binds the same clarify transport used by ask_choice; passing
+    None for choices makes the next chat message the answer. Blocking is only
+    safe in a synchronous slash-command handler, never on the event-loop thread.
+    """
+    asker = _ASKER.get()
+    if asker is None:
+        return None
+    if _running_on_loop():
+        logger.warning("ask_text needs a sync slash-command handler: an async one would block the "
+                       "event loop that delivers the answer; returning None")
+        return None
+    answer = asker(str(question), None)
+    return answer if isinstance(answer, str) else None
 
 def ask_choice(question: str, choices: list[Choice]) -> Optional[str]:
     """Ask the user who ran the current slash command to pick one of *choices*; the picked choice's
