@@ -450,6 +450,9 @@ _CONTENT_POLICY_BLOCKED_PATTERNS = (
     "prompt was flagged by our safety", "responses cannot be generated due to safety",
     "content_filter", "responsibleaipolicyviolation", "new_sensitive",
     "content exists risk", "data may contain inappropriate content", "data_inspection_failed",
+    # NVIDIA NIM / MiniMax input guardrail (HTTP 422); this is a prompt-policy refusal,
+    # not malformed JSON or a transient provider outage.
+    "input rejected by content safety screening", "rejected by content safety screening",
 )
 
 # Aggregator prompt-injection guardrails (OpenRouter Guardrails' regex detector): the platform
@@ -970,6 +973,21 @@ def _gemini_prompt_block_marker(exc: Any) -> Optional[bool]:
     return True if is_block else None
 
 
+def _is_nvidia_public_api_function_not_found(c: _Ctx) -> bool:
+    """NVIDIA hosted NIM 404 for an account-scoped Function it cannot resolve.
+
+    NVIDIA's hosted API uses this response when the account is not provisioned
+    for the public inference endpoint (or its account/Function mapping is broken).
+    It is deterministic for the account, not a transient 404 or a bad chat payload.
+    Require the native NVIDIA host so an unrelated custom endpoint's 404 is untouched.
+    """
+    if c.status_code != 404 or "function" not in c.msg or "not found for account" not in c.msg:
+        return False
+    from utils import base_url_host_matches
+
+    return bool(c.base_url) and base_url_host_matches(c.base_url, "integrate.api.nvidia.com")
+
+
 def _provider_special_cases(c: _Ctx) -> Optional[Verdict]:
     """Highest-priority provider-specific shapes that a status code would misroute."""
     msg, status = c.msg, c.status_code
@@ -979,6 +997,15 @@ def _provider_special_cases(c: _Ctx) -> Optional[Verdict]:
     welcome = _nous_welcome_tier(c)
     if welcome is not None:
         return welcome
+    # NVIDIA hosted NIM: this account-scoped Function 404 is an endpoint entitlement/
+    # provisioning failure, not a retryable generic 404. Stop the same-key retry loop
+    # and let the normal fallback chain try a different provider.
+    if _is_nvidia_public_api_function_not_found(c):
+        return _v(
+            _R.provider_policy_blocked,
+            **_ABORT_FALLBACK,
+            error_context={"provider_access": "nvidia_public_api_endpoints"},
+        )
     # Safety refusal before status classification so a 400 block isn't downgraded
     # to format_error and a status-less block isn't left retryable (#18028).
     if any(p in msg for p in _CONTENT_POLICY_BLOCKED_PATTERNS) or _is_gemini_prompt_block(c.error):
