@@ -470,6 +470,15 @@ class PluginContext(PluginCapabilityCtxMixin, PluginIdleTaskCtxMixin):
         from hermes_cli.plugin_messages import apost
         return await apost(self, text)
 
+    def ask_text(self, question: str) -> Optional[str]:
+        """From a sync slash-command handler, ask its user for a free-form text reply.
+
+        Returns the text, or None when no chat/viewer can ask, the user cancels,
+        the prompt times out, or the handler cannot block safely.
+        """
+        from hermes_cli.plugin_choices import ask_text
+        return ask_text(question)
+
     def ask_choice(self, question: str, choices: list) -> Optional[str]:
         """From a sync slash-command handler: ask its user to pick one of *choices* (``str`` or
         ``{value, label?, description?}``); the value, or None if unanswerable: ``plugin_choices.py``."""
