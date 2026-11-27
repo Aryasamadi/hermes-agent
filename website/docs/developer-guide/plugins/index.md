@@ -2178,6 +2178,26 @@ def register(ctx):
                          args_hint="[mode]")
 ```
 
+### Ask the user for free-form text
+
+A synchronous slash-command handler can collect an open-ended reply with
+`ctx.ask_text(question)`. It uses the same clarify transport as `ctx.ask_choice`:
+messaging adapters send the question and capture the user's next text message, while
+the classic CLI, Ink TUI and Desktop use their clarify input. It returns the reply
+as a string, or `None` if the prompt cannot be answered or times out. Like
+`ask_choice`, it must not be called from an async handler or the event-loop thread.
+
+```python
+def register(ctx):
+    def add_provider(raw_args: str) -> str:
+        name = ctx.ask_text("Provider name:")
+        if not name:
+            return "No provider name received."
+        return f"Provider: {name}"
+
+    ctx.register_command("addprovider", add_provider, description="Add a provider")
+```
+
 ### Dispatch tools from slash commands
 
 Slash command handlers that need to orchestrate tools (spawn a subagent via `delegate_task`, call `file_edit`, etc.) should use `ctx.dispatch_tool()` instead of reaching into framework internals. The parent-agent context (workspace hints, spinner, model inheritance) is wired up automatically.
